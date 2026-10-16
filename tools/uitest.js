@@ -148,7 +148,7 @@ function boot(env, getEmail) {
   const routes = [...doc.querySelectorAll('.nav-item[data-route]')]
     .map(b => b.getAttribute('data-route'));
   check('el menú muestra las 8 secciones para un ADMIN',
-    routes.length === 8, 'rutas: ' + routes.join(', '));
+    routes.length === 9, 'rutas: ' + routes.join(', '));
   check('incluye la sección de administración',
     routes.indexOf('admin-users') !== -1 && routes.indexOf('admin-audit') !== -1);
 
@@ -274,6 +274,164 @@ function boot(env, getEmail) {
     [...doc.querySelectorAll('.tcard-title')]
       .some(e => e.textContent.indexOf('<img src=x') === 0),
     [...doc.querySelectorAll('.tcard-title')].map(e => e.textContent).join(' | '));
+
+  /* ── 7b. Carta Gantt ── */
+  console.log('\n── 7b. Carta Gantt ─────────────────────────────────────────');
+  const fire = (el, type, x, y) => el.dispatchEvent(new window.MouseEvent(type,
+    { bubbles: true, cancelable: true, clientX: x, clientY: y || 0, button: 0 }));
+  const ganttItems = () => { env.as(env.ownerEmail); return env.call('getGantt', proj.projectId).data.items; };
+
+  doc.querySelector('.nav-item[data-route="gantt"]').click();
+  await flush(20);
+  check('la vista Gantt carga con un selector de proyecto y de escala',
+    !!doc.getElementById('gt-project') && !!doc.getElementById('gt-scale'));
+  check('sin actividades se muestra el estado vacío', !!doc.querySelector('#gt-host .empty'));
+  check('el selector de escala ofrece las 6 opciones',
+    [...doc.querySelectorAll('#gt-scale option')].map(o => o.value).join(',') ===
+      'week,month,quarter,fourmonth,semester,year');
+
+  // Alta desde el modal
+  doc.getElementById('gt-new').click();
+  await flush();
+  const gm = doc.querySelector('.overlay');
+  check('se abre el modal de nueva actividad', !!gm);
+  gm.querySelector('[name="titulo"]').value = 'Diseño web';
+  gm.querySelector('[name="grupo"]').value = 'Marketing';
+  gm.querySelector('[name="fila"]').value = 'Ricardo';
+  gm.querySelector('[name="fechaInicio"]').value = '2026-09-10';
+  gm.querySelector('[name="fechaFin"]').value = '2026-09-30';
+  gm.querySelector('[data-act="save"]').click();
+  await flush(20);
+  check('la actividad se guarda y el modal se cierra', !doc.querySelector('.overlay') && ganttItems().length === 1);
+  check('se dibuja una cajita con su título', doc.querySelectorAll('.gt-bar').length === 1 &&
+    doc.querySelector('.gt-bar .t').textContent === 'Diseño web');
+  check('la fila y el grupo aparecen a la izquierda',
+    doc.querySelector('.gt-rlabel').textContent === 'Ricardo' &&
+    doc.querySelector('.gt-gcell').textContent === 'Marketing');
+
+  // Columnas según la escala
+  const lowLabels = () => [...doc.querySelectorAll('.gt-lowrow .gt-lc')].map(c => c.textContent);
+  const upLabels = () => [...doc.querySelectorAll('.gt-uprow .gt-uc')].map(c => c.textContent);
+  const setScale = async v => {
+    const sel = doc.getElementById('gt-scale');
+    sel.value = v; sel.dispatchEvent(new window.Event('change', { bubbles: true }));
+    await flush();
+  };
+  check('escala Mes: columnas por mes agrupadas por año',
+    lowLabels()[0] === 'sep' && upLabels()[0] === '2026', lowLabels().join(',') + ' / ' + upLabels().join(','));
+  await setScale('week');
+  check('escala Semana: columnas por semana agrupadas por mes',
+    lowLabels()[0] === '31 ago' && upLabels()[0] === 'agosto 2026' && upLabels().indexOf('septiembre 2026') !== -1,
+    lowLabels().join(',') + ' / ' + upLabels().join(','));
+  await setScale('quarter');
+  check('escala Trimestre: T1…T4', lowLabels()[0] === 'T3', lowLabels().join(','));
+  await setScale('fourmonth');
+  check('escala Cuatrimestre: C1…C3', lowLabels()[0] === 'C3', lowLabels().join(','));
+  await setScale('semester');
+  check('escala Semestre: S1/S2', lowLabels()[0] === 'S2', lowLabels().join(','));
+  await setScale('year');
+  check('escala Año: una sola fila de encabezado', lowLabels()[0] === '2026' && !doc.querySelector('.gt-uprow'),
+    lowLabels().join(','));
+  await setScale('month');
+  check('cambiar de escala no modifica los datos guardados',
+    ganttItems()[0].fechaInicio === '2026-09-10' && ganttItems()[0].fechaFin === '2026-09-30');
+
+  // Mover con el mouse: 7 px/día en escala Mes → 35 px = 5 días
+  let bar = doc.querySelector('.gt-bar');
+  fire(bar, 'pointerdown', 200, 50);
+  fire(bar, 'pointermove', 235, 50);
+  check('durante el arrastre aparece la etiqueta con las fechas', !!doc.querySelector('.gt-tip'));
+  fire(bar, 'pointerup', 235, 50);
+  await flush(20);
+  let it0 = ganttItems()[0];
+  check('arrastrar la cajita 5 días la mueve sin cambiar su duración',
+    it0.fechaInicio === '2026-09-15' && it0.fechaFin === '2026-10-05', it0.fechaInicio + ' → ' + it0.fechaFin);
+  check('la etiqueta de arrastre desaparece al soltar', !doc.querySelector('.gt-tip'));
+
+  // Extender por el borde derecho: +3 días
+  bar = doc.querySelector('.gt-bar');
+  fire(bar.querySelector('.h.r'), 'pointerdown', 400, 50);
+  fire(bar, 'pointermove', 421, 50);
+  fire(bar, 'pointerup', 421, 50);
+  await flush(20);
+  it0 = ganttItems()[0];
+  check('tirar del borde derecho extiende el término', it0.fechaInicio === '2026-09-15' && it0.fechaFin === '2026-10-08',
+    it0.fechaInicio + ' → ' + it0.fechaFin);
+
+  // Acortar por el borde izquierdo: +2 días
+  bar = doc.querySelector('.gt-bar');
+  fire(bar.querySelector('.h.l'), 'pointerdown', 100, 50);
+  fire(bar, 'pointermove', 114, 50);
+  fire(bar, 'pointerup', 114, 50);
+  await flush(20);
+  it0 = ganttItems()[0];
+  check('tirar del borde izquierdo mueve el inicio', it0.fechaInicio === '2026-09-17' && it0.fechaFin === '2026-10-08',
+    it0.fechaInicio + ' → ' + it0.fechaFin);
+
+  // No se puede invertir: arrastrar el borde derecho más allá del inicio
+  bar = doc.querySelector('.gt-bar');
+  fire(bar.querySelector('.h.r'), 'pointerdown', 500, 50);
+  fire(bar, 'pointermove', 100, 50);
+  fire(bar, 'pointerup', 100, 50);
+  await flush(20);
+  it0 = ganttItems()[0];
+  check('el término nunca queda antes del inicio', it0.fechaFin >= it0.fechaInicio, it0.fechaInicio + ' → ' + it0.fechaFin);
+
+  // Un clic sin arrastre abre la edición
+  bar = doc.querySelector('.gt-bar');
+  fire(bar, 'pointerdown', 300, 50);
+  fire(bar, 'pointerup', 300, 50);
+  await flush();
+  check('un clic sin arrastre abre el modal de edición',
+    !!doc.querySelector('.overlay') && doc.querySelector('.overlay [name="titulo"]').value === 'Diseño web');
+  doc.querySelector('.overlay [name="titulo"]').value = 'Diseño web v2';
+  doc.querySelector('.overlay [data-act="save"]').click();
+  await flush(20);
+  check('editar el título se refleja en la cajita', doc.querySelector('.gt-bar .t').textContent === 'Diseño web v2');
+
+  // Segunda actividad en la misma fila (doble clic en el carril)
+  const lane = doc.querySelector('.gt-lane');
+  fire(lane, 'dblclick', 0, 0);
+  await flush();
+  const gm2 = doc.querySelector('.overlay');
+  check('doble clic en una fila abre el alta con la fila preseleccionada',
+    !!gm2 && gm2.querySelector('[name="fila"]').value === 'Ricardo' && gm2.querySelector('[name="grupo"]').value === 'Marketing');
+  gm2.querySelector('[name="titulo"]').value = 'Investigar';
+  gm2.querySelector('[data-act="save"]').click();
+  await flush(20);
+  check('ambas actividades comparten la misma fila',
+    doc.querySelectorAll('.gt-row').length === 1 && doc.querySelectorAll('.gt-bar').length === 2);
+
+  // XSS
+  env.as(env.ownerEmail);
+  env.call('createGanttItem', { projectId: proj.projectId, grupo: '<b>g</b>', fila: '<i>f</i>',
+    titulo: '<img src=x onerror="window.__xss=2">', fechaInicio: '2026-10-01', fechaFin: '2026-10-10' });
+  doc.getElementById('gt-refresh').click();
+  await flush(20);
+  check('los textos del Gantt se escapan (sin elementos inyectados)',
+    doc.querySelectorAll('.gt-wrap img, .gt-wrap b, .gt-wrap i:not(.gt-vline):not(.gt-today)').length === 0 &&
+    window.__xss === undefined);
+
+  // Eliminar
+  bar = doc.querySelector('.gt-bar');
+  fire(bar, 'pointerdown', 300, 50);
+  fire(bar, 'pointerup', 300, 50);
+  await flush();
+  const nBefore = ganttItems().length;
+  doc.querySelector('.overlay [data-act="delete"]').click();
+  await flush();
+  doc.querySelector('.overlay [data-act="yes"]').click();
+  await flush(20);
+  check('eliminar una actividad la quita del Gantt', ganttItems().length === nBefore - 1);
+
+  // Acceso directo desde la tarjeta del proyecto
+  doc.querySelector('.nav-item[data-route="projects"]').click();
+  await flush(20);
+  const gBtn = doc.querySelector('.proj-card [data-act="gantt"]');
+  check('la tarjeta del proyecto tiene un acceso al Gantt', !!gBtn);
+  gBtn.click();
+  await flush(20);
+  check('el acceso abre el Gantt del proyecto', !!doc.getElementById('gt-scale') && doc.querySelectorAll('.gt-bar').length >= 1);
 
   /* ── 8. Mis tareas ── */
   console.log('\n── 8. Mis tareas ───────────────────────────────────────────');

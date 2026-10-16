@@ -5,7 +5,7 @@ sobre **Google Apps Script + Google Sheets**. Sin servidores externos, sin
 bases de datos externas, sin servicios de pago.
 
 ```
-Dashboard · Proyectos · Kanban (5 columnas, drag & drop) · Mis tareas
+Dashboard · Proyectos · Kanban (5 columnas, drag & drop) · Carta Gantt · Mis tareas
 Subtareas · Comentarios · Historial · Auditoría · Mantenedor de usuarios
 ```
 
@@ -35,6 +35,7 @@ no importa: Apps Script evalúa todos los `.gs` en un único ámbito global.
 | `Users.gs` | Mantenedor de usuarios y reglas de integridad (último admin, autodesactivación) |
 | `Projects.gs` | CRUD de proyectos, métricas derivadas, cálculo de "en riesgo" |
 | `Tasks.gs` | CRUD de tareas, tablero, movimiento y reordenamiento Kanban, avance |
+| `Gantt.gs` | Actividades de la carta Gantt por proyecto (alta, mover/extender, eliminar) |
 | `Subtasks.gs` | Subtareas y propagación del avance a la tarea padre |
 | `Comments.gs` | Comentarios |
 | `Audit.gs` | Registro y consulta de auditoría |
@@ -51,6 +52,7 @@ no importa: Apps Script evalúa todos los `.gs` en un único ámbito global.
 | `ViewDashboard.html` | KPIs y gráficos |
 | `ViewProjects.html` | Listado, alta, edición y archivado de proyectos |
 | `ViewKanban.html` | Tablero, filtros y drag & drop |
+| `ViewGantt.html` | Carta Gantt: escala semana…año, filas agrupadas, mover/extender con el mouse |
 | `ViewTaskDetail.html` | Formulario de tarea, panel de detalle, subtareas, comentarios, historial |
 | `ViewMyTasks.html` | "Mis tareas" ordenadas por urgencia |
 | `ViewAdmin.html` | Usuarios, auditoría, configuración y perfil |
@@ -66,8 +68,8 @@ no importa: Apps Script evalúa todos los `.gs` en un único ámbito global.
 |---|---|
 | `tools/verify.js` | Comprobaciones estáticas: sintaxis, colisiones de declaraciones, RPC ↔ API, `include` ↔ archivos, campos ↔ esquema, rutas ↔ vistas, heurística XSS |
 | `tools/gasenv.js` | Simulador en memoria de los servicios de Apps Script |
-| `tools/sim.js` | 116 pruebas funcionales del backend (instalación, permisos, Kanban, avance, auditoría…) |
-| `tools/uitest.js` | 59 pruebas de extremo a extremo del frontend real sobre jsdom |
+| `tools/sim.js` | 135 pruebas funcionales del backend (instalación, permisos, Kanban, avance, auditoría…) |
+| `tools/uitest.js` | 87 pruebas de extremo a extremo del frontend real sobre jsdom |
 
 ```bash
 npm install jsdom
@@ -89,6 +91,10 @@ objetos `Date` y un valor que empieza con `=` nunca se evalúa como fórmula.
 **TASKS** — `taskId · projectId · titulo · descripcion · estado · prioridad · porcentajeAvance · avanceManual · responsable · fechaInicio · fechaVencimiento · fechaCompletado · creadoPor · fechaCreacion · actualizadoPor · fechaActualizacion · ordenKanban · activo`
 
 **SUBTASKS** — `subtaskId · taskId · titulo · descripcion · completada · porcentajeAvance · responsable · fechaVencimiento · fechaCreacion · fechaActualizacion · activo`
+
+**GANTT** — `ganttId · projectId · grupo · fila · titulo · fechaInicio · fechaFin · orden · fechaCreacion · fechaActualizacion · activo`
+
+Una fila del Gantt es el par `(grupo, fila)`; varias actividades con el mismo par comparten línea. La hoja se crea sola al primer uso (o al ejecutar `setupApplication()`).
 
 **COMMENTS** — `commentId · taskId · userId · comentario · fechaCreacion · activo`
 
@@ -124,7 +130,7 @@ Convenciones:
    reemplaza su contenido por el del repositorio.
 2. Crea un archivo por cada `.html` (**+** → HTML) con **exactamente el mismo
    nombre, sin la extensión**: `Index`, `Styles`, `App`, `ViewDashboard`,
-   `ViewProjects`, `ViewKanban`, `ViewTaskDetail`, `ViewMyTasks`, `ViewAdmin`.
+   `ViewProjects`, `ViewKanban`, `ViewGantt`, `ViewTaskDetail`, `ViewMyTasks`, `ViewAdmin`.
 3. Opcional: pega `src/appsscript.json` sobre el manifiesto del proyecto para
    fijar la zona horaria y el tipo de despliegue. **No declara `oauthScopes` a
    propósito**: Apps Script los infiere del código en cada guardado, y una lista
@@ -298,6 +304,14 @@ Las marcadas con ✅ están cubiertas automáticamente por `tools/sim.js` y
 - [ ] ✅ Al salir de DONE se limpia la fecha y el avance se recalcula
 - [ ] Mover una tarjeta con la red caída muestra un error y el tablero vuelve a su estado real
 - [ ] ✅ Los contadores de cada columna se actualizan sin recargar la página
+
+### Carta Gantt
+
+- [ ] La vista **Gantt** (o el botón *Gantt* de la tarjeta de un proyecto) muestra las actividades del proyecto elegido
+- [ ] El selector de escala (Semana, Mes, Trimestre, Cuatrimestre, Semestre, Año) cambia las columnas y su agrupación sin alterar las fechas
+- [ ] **+ Actividad** crea una cajita; doble clic en una fila crea otra en esa misma fila
+- [ ] Arrastrar una cajita la mueve (y a otra fila si se suelta sobre ella); tirar de los bordes cambia inicio o término; se persiste al soltar
+- [ ] Clic en una cajita abre su edición, con opción de eliminar
 
 ### Tareas, subtareas y comentarios
 

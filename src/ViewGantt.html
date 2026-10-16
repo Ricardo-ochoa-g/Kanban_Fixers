@@ -1,0 +1,552 @@
+<script>
+/* ==========================================================================
+   ViewGantt.html — Carta Gantt por proyecto.
+
+   · La escala (semana … año) solo cambia cómo se dibujan las columnas; lo que
+     se guarda son fechas, de modo que cambiar de escala nunca altera datos.
+   · Posición y tamaño de cada cajita salen de una única función de geometría:
+     x = (día - inicioDelRango) * pxPorDía. Arrastrar convierte píxeles a días.
+   · Al soltar, la cajita se actualiza de inmediato en pantalla (optimista) y se
+     persiste. Si el servidor rechaza el cambio, se vuelve a leer el estado real.
+   · Todos los textos de datos pasan por UI.esc().
+   ========================================================================== */
+
+var Gantt = { data: null, projectId: null, scale: 'month', geo: null, drag: null, tip: null };
+
+var GT_SCALES = [
+  { v: 'week',      label: 'Semana',       ppd: 30,  minCols: 8, defLen: 4 },
+  { v: 'month',     label: 'Mes',          ppd: 7,   minCols: 6, defLen: 14 },
+  { v: 'quarter',   label: 'Trimestre',    ppd: 2.4, minCols: 4, defLen: 30 },
+  { v: 'fourmonth', label: 'Cuatrimestre', ppd: 1.8, minCols: 3, defLen: 40 },
+  { v: 'semester',  label: 'Semestre',     ppd: 1.2, minCols: 3, defLen: 60 },
+  { v: 'year',      label: 'Año',          ppd: 0.6, minCols: 3, defLen: 90 }
+];
+var GT_MONTHS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+var GT_MONTHS_LONG = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto',
+  'septiembre', 'octubre', 'noviembre', 'diciembre'];
+var GT_MONTHS_PER = { month: 1, quarter: 3, fourmonth: 4, semester: 6, year: 12 };
+var GT_GROUP_W = 34, GT_LABEL_W = 176, GT_BAR_H = 30, GT_BAR_GAP = 6, GT_ROW_PAD = 7, GT_MIN_BAR_W = 22;
+var GT_COLORS = 6;
+
+/* ───────────────────────────── Fechas (días enteros) ───────────────────── */
+
+function gtPad(n) { return (n < 10 ? '0' : '') + n; }
+
+/** 'YYYY-MM-DD' → nº de días desde 1970-01-01 (UTC, sin deriva horaria). */
+function gtDay(iso) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || '');
+  return m ? Math.round(Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000) : null;
+}
+function gtParts(day) {
+  var d = new Date(day * 86400000);
+  return { y: d.getUTCFullYear(), m: d.getUTCMonth(), d: d.getUTCDate() };
+}
+function gtIso(day) {
+  var p = gtParts(day);
+  return p.y + '-' + gtPad(p.m + 1) + '-' + gtPad(p.d);
+}
+function gtMonthStart(y, m) { return Math.round(Date.UTC(y, m, 1) / 86400000); }
+function gtToday() {
+  var n = new Date();
+  return gtDay(n.getFullYear() + '-' + gtPad(n.getMonth() + 1) + '-' + gtPad(n.getDate()));
+}
+function gtShort(day) { var p = gtParts(day); return p.d + ' ' + GT_MONTHS[p.m]; }
+function gtLong(iso) { var d = gtDay(iso); if (d === null) return ''; var p = gtParts(d); return p.d + ' ' + GT_MONTHS[p.m] + ' ' + p.y; }
+
+/** Inicio de la unidad (semana lunes-domingo, mes, trimestre…) que contiene `day`. */
+function gtUnitStart(scale, day) {
+  if (scale === 'week') return day - ((((day + 3) % 7) + 7) % 7);   // el 1-ene-1970 fue jueves
+  var n = GT_MONTHS_PER[scale];
+  var p = gtParts(day);
+  return gtMonthStart(p.y, Math.floor(p.m / n) * n);
+}
+function gtUnitNext(scale, start) {
+  if (scale === 'week') return start + 7;
+  var p = gtParts(start);
+  return gtMonthStart(p.y, p.m + GT_MONTHS_PER[scale]);
+}
+function gtColLabel(scale, start) {
+  var p = gtParts(start);
+  switch (scale) {
+    case 'week': return p.d + ' ' + GT_MONTHS[p.m];
+    case 'month': return GT_MONTHS[p.m];
+    case 'quarter': return 'T' + (p.m / 3 + 1);
+    case 'fourmonth': return 'C' + (p.m / 4 + 1);
+    case 'semester': return 'S' + (p.m / 6 + 1);
+    default: return String(p.y);
+  }
+}
+/** Texto de la fila superior (columnas agrupadas). null = escala sin agrupación. */
+function gtUpperLabel(scale, start) {
+  var p = gtParts(start);
+  if (scale === 'week') return GT_MONTHS_LONG[p.m] + ' ' + p.y;
+  if (scale === 'year') return null;
+  return String(p.y);
+}
+
+function gtScaleDef(v) {
+  return GT_SCALES.filter(function (s) { return s.v === v; })[0] || GT_SCALES[1];
+}
+
+/* ───────────────────────────── Geometría ───────────────────────────────── */
+
+/**
+ * Rango visible: del inicio de la unidad que contiene la fecha más temprana
+ * (actividades y proyecto) hasta una columna más allá de la más tardía, con un
+ * mínimo de columnas. La columna extra deja espacio para extender hacia la derecha.
+ */
+function gtBuildGeo(data, sc) {
+  var days = [];
+  data.items.forEach(function (i) { days.push(gtDay(i.fechaInicio), gtDay(i.fechaFin)); });
+  if (data.project) days.push(gtDay(data.project.fechaInicio), gtDay(data.project.fechaFin));
+  days = days.filter(function (d) { return d !== null; });
+  if (!days.length) days = [gtToday()];
+  var min = Math.min.apply(null, days), max = Math.max.apply(null, days);
+
+  var cols = [], cur = gtUnitStart(sc.v, min), guard = 0;
+  while (guard++ < 3000) {
+    var next = gtUnitNext(sc.v, cur);
+    cols.push({ start: cur, end: next });
+    if (cols.length >= sc.minCols && next > max) break;
+    cur = next;
+  }
+  var last = cols[cols.length - 1];
+  cols.push({ start: last.end, end: gtUnitNext(sc.v, last.end) });
+
+  var upper = [];
+  cols.forEach(function (c) {
+    var label = gtUpperLabel(sc.v, c.start);
+    var prev = upper[upper.length - 1];
+    if (prev && prev.label === label) prev.end = c.end;
+    else upper.push({ label: label, start: c.start, end: c.end });
+  });
+
+  var rs = cols[0].start, re = cols[cols.length - 1].end;
+  return { sc: sc, ppd: sc.ppd, rs: rs, re: re, cols: cols, upper: upper,
+    totalW: Math.round((re - rs) * sc.ppd), firstItemDay: days.length ? Math.min.apply(null, days) : rs };
+}
+
+function gtX(geo, day) { return (day - geo.rs) * geo.ppd; }
+function gtBarW(geo, d0, d1) { return Math.max((d1 - d0 + 1) * geo.ppd, GT_MIN_BAR_W); }
+
+/* ───────────────────────────── Agrupación en filas ─────────────────────── */
+
+function gtHash(s) {
+  var h = 0;
+  for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h;
+}
+
+/** items (ya ordenados por fila) → [{ name, color, rows:[{ grupo, fila, items, lanes }] }] */
+function gtGroups(items) {
+  var groups = [], gIdx = {}, rIdx = {};
+  items.forEach(function (it) {
+    var g = gIdx[it.grupo];
+    if (!g) {
+      g = { name: it.grupo, color: gtHash(it.grupo) % GT_COLORS, rows: [] };
+      gIdx[it.grupo] = g; groups.push(g);
+    }
+    var key = it.grupo + '\u0001' + it.fila;
+    var r = rIdx[key];
+    if (!r) { r = { grupo: it.grupo, fila: it.fila, items: [] }; rIdx[key] = r; g.rows.push(r); }
+    r.items.push(it);
+  });
+  groups.forEach(function (g) {
+    g.rows.forEach(gtPack);
+    // El nombre del grupo se lee en vertical: la banda necesita alto suficiente.
+    const need = Math.min(150, g.name.length * 7.5 + 22);
+    const have = g.rows.reduce(function (n, r) { return n + r.height; }, 0);
+    if (have < need) {
+      const extra = Math.ceil((need - have) / g.rows.length);
+      g.rows.forEach(function (r) { r.height += extra; r.padTop += extra / 2; });
+    }
+  });
+  return groups;
+}
+
+/** Reparte las cajitas de una fila en sublíneas para que no se superpongan. */
+function gtPack(row) {
+  var ends = [];
+  row.items.slice().sort(function (a, b) {
+    return String(a.fechaInicio).localeCompare(String(b.fechaInicio));
+  }).forEach(function (it) {
+    var s = gtDay(it.fechaInicio), e = gtDay(it.fechaFin), lane = 0;
+    while (lane < ends.length && s <= ends[lane]) lane++;
+    ends[lane] = e;
+    it._lane = lane;
+  });
+  row.lanes = Math.max(1, ends.length);
+  row.padTop = GT_ROW_PAD;
+  row.height = GT_ROW_PAD * 2 + row.lanes * GT_BAR_H + (row.lanes - 1) * GT_BAR_GAP;
+}
+
+/* ───────────────────────────── Vista y carga ───────────────────────────── */
+
+App.registerView('gantt', {
+  title: 'Gantt',
+
+  render: function (view, params) {
+    const projects = App.state.projects.filter(p => p.activo);
+    if (!projects.length) {
+      App.setHeader('Gantt', 'Aún no hay proyectos disponibles', '');
+      view.innerHTML = UI.empty('&#128197;', 'No hay proyectos activos',
+        'Crea un proyecto para planificarlo en una carta Gantt.');
+      return;
+    }
+    const pid = params.projectId || App.state.currentProjectId || projects[0].projectId;
+    App.state.currentProjectId = projects.some(p => p.projectId === pid) ? pid : projects[0].projectId;
+    Gantt.projectId = App.state.currentProjectId;
+
+    try {
+      const saved = window.localStorage && localStorage.getItem('kw-gantt-scale');
+      if (saved) Gantt.scale = gtScaleDef(saved).v;
+    } catch (e) { /* sin almacenamiento: se usa la escala por defecto */ }
+
+    gtHeader();
+    view.innerHTML =
+      '<p class="gt-hint" id="gt-hint"></p>' +
+      '<div id="gt-host">' + UI.skeleton(2) + '</div>';
+    return gtLoad();
+  }
+});
+
+function gtCanWrite() { return App.can('gantt.write'); }
+
+function gtHeader(subtitle) {
+  const projects = App.state.projects.filter(p => p.activo);
+  App.setHeader('Gantt', subtitle || '',
+    '<select id="gt-project" aria-label="Proyecto" style="min-width:210px;width:auto">' +
+      projects.map(p => '<option value="' + UI.esc(p.projectId) + '"' +
+        (p.projectId === Gantt.projectId ? ' selected' : '') + '>' + UI.esc(p.nombre) + '</option>').join('') +
+    '</select>' +
+    '<select id="gt-scale" aria-label="Escala de tiempo" style="width:auto">' +
+      GT_SCALES.map(s => '<option value="' + s.v + '"' + (s.v === Gantt.scale ? ' selected' : '') + '>' +
+        UI.esc(s.label) + '</option>').join('') +
+    '</select>' +
+    (gtCanWrite() ? '<button class="btn btn-primary" id="gt-new">+ Actividad</button>' : '') +
+    '<button class="btn btn-ghost btn-icon" id="gt-refresh" title="Actualizar">&#8635;</button>');
+
+  document.getElementById('gt-project').addEventListener('change', e => {
+    App.go('gantt', { projectId: e.target.value });
+  });
+  document.getElementById('gt-scale').addEventListener('change', e => {
+    Gantt.scale = gtScaleDef(e.target.value).v;
+    try { if (window.localStorage) localStorage.setItem('kw-gantt-scale', Gantt.scale); } catch (err) { /* noop */ }
+    gtRender(true);
+  });
+  const nw = document.getElementById('gt-new');
+  if (nw) nw.addEventListener('click', () => gtOpenModal(null, {}));
+  document.getElementById('gt-refresh').addEventListener('click', () => App.refresh());
+}
+
+function gtLoad() {
+  return App.rpc('getGantt', Gantt.projectId).then(data => {
+    Gantt.data = data;
+    gtRender(true);
+  });
+}
+
+function gtFind(id) {
+  return (Gantt.data ? Gantt.data.items : []).filter(i => i.ganttId === id)[0] || null;
+}
+
+/* ───────────────────────────── Pintado ─────────────────────────────────── */
+
+/** @param {boolean} scrollToWork Llevar el scroll a la primera actividad. */
+function gtRender(scrollToWork) {
+  const host = document.getElementById('gt-host');
+  if (!host || !Gantt.data) return;
+
+  const data = Gantt.data;
+  const hint = document.getElementById('gt-hint');
+  if (hint) {
+    hint.textContent = gtCanWrite()
+      ? 'Arrastra una actividad para moverla (también a otra fila) · tira de sus bordes para cambiar la duración · ' +
+        'clic para editar · doble clic en una fila vacía para crear.'
+      : 'Vista de solo lectura.';
+  }
+  gtHeader(data.project.nombre);
+
+  if (!data.items.length) {
+    host.innerHTML = UI.empty('&#128197;', 'Este proyecto aún no tiene actividades',
+      gtCanWrite() ? 'Agrega la primera con "+ Actividad".' : 'Todavía no se ha planificado nada.');
+    return;
+  }
+
+  const prevLeft = host.firstChild && host.firstChild.scrollLeft || 0;
+  const prevTop = host.firstChild && host.firstChild.scrollTop || 0;
+
+  const sc = gtScaleDef(Gantt.scale);
+  const geo = Gantt.geo = gtBuildGeo(data, sc);
+  const groups = gtGroups(data.items);
+  const today = gtToday();
+  const LW = GT_GROUP_W + GT_LABEL_W;
+
+  let head = '<div class="gt-head"><div class="gt-corner" style="width:' + LW + 'px">Acciones</div>' +
+    '<div class="gt-tl" style="width:' + geo.totalW + 'px">';
+  if (geo.upper[0].label !== null) {
+    head += '<div class="gt-uprow">' + geo.upper.map(u =>
+      '<div class="gt-uc" style="width:' + Math.round((u.end - u.start) * geo.ppd) + 'px">' +
+      UI.esc(u.label) + '</div>').join('') + '</div>';
+  }
+  head += '<div class="gt-lowrow">' + geo.cols.map(c =>
+    '<div class="gt-lc' + (today >= c.start && today < c.end ? ' is-today' : '') +
+    '" style="width:' + Math.round((c.end - c.start) * geo.ppd) + 'px">' +
+    UI.esc(gtColLabel(sc.v, c.start)) + '</div>').join('') + '</div></div></div>';
+
+  let lines = '<div class="gt-lines" style="left:' + LW + 'px;width:' + geo.totalW + 'px">' +
+    geo.cols.slice(1).map(c => '<i class="gt-vline" style="left:' + Math.round(gtX(geo, c.start)) + 'px"></i>').join('');
+  if (today >= geo.rs && today < geo.re) {
+    lines += '<i class="gt-today" title="Hoy" style="left:' + Math.round(gtX(geo, today) + geo.ppd / 2) + 'px"></i>';
+  }
+  lines += '</div>';
+
+  const body = groups.map(g =>
+    '<div class="gt-group">' +
+      '<div class="gt-gcell gc-' + g.color + '" title="' + UI.esc(g.name) + '"><span>' + UI.esc(g.name) + '</span></div>' +
+      '<div class="gt-grows">' + g.rows.map(r => gtRowHtml(r, geo)).join('') + '</div>' +
+    '</div>').join('');
+
+  host.innerHTML = '<div class="gt-wrap' + (gtCanWrite() ? '' : ' gt-ro') + '" id="gt-wrap">' +
+    '<div class="gt-inner" style="width:' + (LW + geo.totalW) + 'px">' + head +
+    '<div class="gt-body">' + lines + body + '</div></div></div>';
+
+  const wrap = document.getElementById('gt-wrap');
+  if (scrollToWork) {
+    wrap.scrollLeft = Math.max(0, gtX(geo, geo.firstItemDay) - 40);
+  } else {
+    wrap.scrollLeft = prevLeft; wrap.scrollTop = prevTop;
+  }
+  gtBind(wrap);
+}
+
+function gtRowHtml(row, geo) {
+  const g = 'gc-' + (gtHash(row.grupo) % GT_COLORS);
+  const bars = row.items.map(it => {
+    const d0 = gtDay(it.fechaInicio), d1 = gtDay(it.fechaFin);
+    return '<div class="gt-bar ' + g + '" data-id="' + UI.esc(it.ganttId) + '" style="left:' +
+      Math.round(gtX(geo, d0)) + 'px;width:' + Math.round(gtBarW(geo, d0, d1)) + 'px;top:' +
+      Math.round(row.padTop + it._lane * (GT_BAR_H + GT_BAR_GAP)) + 'px" title="' +
+      UI.esc(it.titulo + ' · ' + gtLong(it.fechaInicio) + ' → ' + gtLong(it.fechaFin)) + '">' +
+      '<span class="h l" data-h="l"></span><span class="t">' + UI.esc(it.titulo) + '</span>' +
+      '<span class="h r" data-h="r"></span></div>';
+  }).join('');
+  return '<div class="gt-row" style="height:' + row.height + 'px">' +
+    '<div class="gt-rlabel" title="' + UI.esc(row.fila) + '"><span>' + UI.esc(row.fila) + '</span></div>' +
+    '<div class="gt-lane" style="width:' + geo.totalW + 'px" data-grupo="' + UI.esc(row.grupo) +
+      '" data-fila="' + UI.esc(row.fila) + '">' + bars + '</div></div>';
+}
+
+/* ───────────────────────────── Arrastre con el mouse ───────────────────── */
+
+function gtBind(wrap) {
+  if (!gtCanWrite()) return;
+  wrap.querySelectorAll('.gt-bar').forEach(bar => bar.addEventListener('pointerdown', gtDown));
+  wrap.querySelectorAll('.gt-lane').forEach(lane => lane.addEventListener('dblclick', gtLaneDblClick));
+}
+
+function gtDown(e) {
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  const bar = e.currentTarget;
+  const it = gtFind(bar.getAttribute('data-id'));
+  if (!it || Gantt.drag) return;
+  const h = e.target && e.target.getAttribute ? e.target.getAttribute('data-h') : null;
+  const d0 = gtDay(it.fechaInicio), d1 = gtDay(it.fechaFin);
+  Gantt.drag = {
+    bar: bar, it: it, mode: h === 'l' ? 'l' : (h === 'r' ? 'r' : 'move'),
+    x0: e.clientX, y0: e.clientY, d0: d0, d1: d1, nd0: d0, nd1: d1, moved: false, lane: null
+  };
+  if (bar.setPointerCapture && e.pointerId !== undefined) {
+    try { bar.setPointerCapture(e.pointerId); } catch (err) { /* noop */ }
+  }
+  bar.addEventListener('pointermove', gtMove);
+  bar.addEventListener('pointerup', gtUp);
+  bar.addEventListener('pointercancel', gtCancel);
+  e.preventDefault();
+}
+
+function gtMove(e) {
+  const st = Gantt.drag, geo = Gantt.geo;
+  if (!st) return;
+  const dx = e.clientX - st.x0, dy = e.clientY - st.y0;
+  if (!st.moved && Math.abs(dx) < 3 && Math.abs(dy) < 3) return;
+  if (!st.moved) { st.moved = true; st.bar.classList.add('dragging'); }
+
+  const dd = Math.round(dx / geo.ppd);
+  const minDay = geo.rs, maxDay = geo.re - 1;
+  if (st.mode === 'move') {
+    const len = st.d1 - st.d0;
+    st.nd0 = Math.max(minDay, Math.min(maxDay - len, st.d0 + dd));
+    st.nd1 = st.nd0 + len;
+  } else if (st.mode === 'l') {
+    st.nd0 = Math.max(minDay, Math.min(st.d1, st.d0 + dd)); st.nd1 = st.d1;
+  } else {
+    st.nd1 = Math.min(maxDay, Math.max(st.d0, st.d1 + dd)); st.nd0 = st.d0;
+  }
+
+  st.bar.style.left = Math.round(gtX(geo, st.nd0)) + 'px';
+  st.bar.style.width = Math.round(gtBarW(geo, st.nd0, st.nd1)) + 'px';
+
+  if (st.mode === 'move') {
+    st.bar.style.transform = 'translateY(' + dy + 'px)';
+    gtHighlightLane(st, e.clientY);
+  }
+  gtShowTip(e, gtShort(st.nd0) + ' → ' + gtShort(st.nd1) + ' · ' + (st.nd1 - st.nd0 + 1) + ' d');
+}
+
+/** Resalta la fila bajo el puntero; no depende de elementFromPoint (no existe en jsdom). */
+function gtHighlightLane(st, clientY) {
+  let found = null;
+  document.querySelectorAll('#gt-wrap .gt-lane').forEach(l => {
+    const r = l.getBoundingClientRect();
+    if (clientY >= r.top && clientY < r.bottom) found = l;
+    l.classList.remove('drop-target');
+  });
+  st.lane = found;
+  if (found) found.classList.add('drop-target');
+}
+
+function gtShowTip(e, text) {
+  if (!Gantt.tip) {
+    Gantt.tip = document.createElement('div');
+    Gantt.tip.className = 'gt-tip';
+    document.body.appendChild(Gantt.tip);
+  }
+  Gantt.tip.textContent = text;
+  Gantt.tip.style.left = (e.clientX + 14) + 'px';
+  Gantt.tip.style.top = (e.clientY - 30) + 'px';
+}
+
+function gtEndDrag() {
+  const st = Gantt.drag;
+  if (st) {
+    st.bar.removeEventListener('pointermove', gtMove);
+    st.bar.removeEventListener('pointerup', gtUp);
+    st.bar.removeEventListener('pointercancel', gtCancel);
+    st.bar.classList.remove('dragging');
+    st.bar.style.transform = '';
+  }
+  document.querySelectorAll('#gt-wrap .gt-lane.drop-target').forEach(l => l.classList.remove('drop-target'));
+  if (Gantt.tip) { Gantt.tip.remove(); Gantt.tip = null; }
+  Gantt.drag = null;
+  return st;
+}
+
+function gtCancel() {
+  const st = gtEndDrag();
+  if (st && st.moved) gtRender(false);
+}
+
+function gtUp() {
+  const st = gtEndDrag();
+  if (!st) return;
+  if (!st.moved) { gtOpenModal(st.it, {}); return; }   // un clic sin arrastre = editar
+
+  const patch = {};
+  if (st.nd0 !== st.d0 || st.nd1 !== st.d1) {
+    patch.fechaInicio = gtIso(st.nd0);
+    patch.fechaFin = gtIso(st.nd1);
+  }
+  if (st.mode === 'move' && st.lane) {
+    const g = st.lane.getAttribute('data-grupo'), f = st.lane.getAttribute('data-fila');
+    if (g !== st.it.grupo || f !== st.it.fila) { patch.grupo = g; patch.fila = f; }
+  }
+  if (!Object.keys(patch).length) { gtRender(false); return; }
+
+  // Actualización optimista y persistencia.
+  Object.keys(patch).forEach(k => { st.it[k] = patch[k]; });
+  gtRender(false);
+  App.rpc('updateGanttItem', st.it.ganttId, patch)
+    .then(data => { Gantt.data = data; gtRender(false); })
+    .catch(err => {
+      App.handleError(err);
+      gtLoad().catch(App.handleError);   // nunca dejar en pantalla algo que no está guardado
+    });
+}
+
+/* ───────────────────────────── Alta / edición ──────────────────────────── */
+
+function gtLaneDblClick(e) {
+  if (e.target.closest && e.target.closest('.gt-bar')) return;
+  const geo = Gantt.geo, lane = e.currentTarget;
+  const x = e.clientX - lane.getBoundingClientRect().left;
+  const day = Math.max(geo.rs, Math.min(geo.re - 1, Math.floor(x / geo.ppd) + geo.rs));
+  gtOpenModal(null, {
+    grupo: lane.getAttribute('data-grupo'), fila: lane.getAttribute('data-fila'),
+    fechaInicio: gtIso(day), fechaFin: gtIso(day + geo.sc.defLen - 1)
+  });
+}
+
+function gtOpenModal(item, preset) {
+  const it = item || {};
+  const isEdit = !!item;
+  const items = Gantt.data ? Gantt.data.items : [];
+  const uniq = arr => arr.filter((v, i) => arr.indexOf(v) === i);
+
+  const start = it.fechaInicio || preset.fechaInicio || gtIso(gtToday());
+  const end = it.fechaFin || preset.fechaFin || gtIso(gtDay(start) + gtScaleDef(Gantt.scale).defLen - 1);
+
+  const overlay = UI.openModal({
+    title: isEdit ? 'Editar actividad' : 'Nueva actividad',
+    subtitle: Gantt.data ? Gantt.data.project.nombre : '',
+    body:
+      '<label class="field"><span>Actividad *</span>' +
+        '<input type="text" name="titulo" maxlength="200" value="' + UI.esc(it.titulo || '') + '" required></label>' +
+      '<div class="grid-2">' +
+        '<label class="field"><span>Grupo</span>' +
+          '<input type="text" name="grupo" maxlength="80" list="gt-dl-g" placeholder="General" value="' +
+            UI.esc(it.grupo || preset.grupo || '') + '"></label>' +
+        '<label class="field"><span>Acción (fila)</span>' +
+          '<input type="text" name="fila" maxlength="120" list="gt-dl-r" placeholder="Igual al título" value="' +
+            UI.esc(it.fila || preset.fila || '') + '"></label>' +
+      '</div>' +
+      '<datalist id="gt-dl-g">' + uniq(items.map(i => i.grupo)).map(v => '<option value="' + UI.esc(v) + '">').join('') + '</datalist>' +
+      '<datalist id="gt-dl-r">' + uniq(items.map(i => i.fila)).map(v => '<option value="' + UI.esc(v) + '">').join('') + '</datalist>' +
+      '<div class="grid-2">' +
+        '<label class="field" style="margin-bottom:0"><span>Inicio *</span>' +
+          '<input type="date" name="fechaInicio" value="' + UI.esc(start) + '" required></label>' +
+        '<label class="field" style="margin-bottom:0"><span>Término *</span>' +
+          '<input type="date" name="fechaFin" value="' + UI.esc(end) + '" required></label>' +
+      '</div>',
+    footer:
+      (isEdit ? '<button class="btn btn-danger" data-act="delete" style="margin-right:auto">Eliminar</button>' : '') +
+      '<button class="btn" data-act="cancel">Cancelar</button>' +
+      '<button class="btn btn-primary" data-act="save">' + (isEdit ? 'Guardar cambios' : 'Crear actividad') + '</button>',
+    onMount: root => {
+      root.querySelector('[data-act="cancel"]').addEventListener('click', () => UI.closeModal(overlay));
+
+      root.querySelector('[data-act="save"]').addEventListener('click', ev => {
+        const data = UI.readForm(root);
+        if (!String(data.titulo || '').trim()) { UI.modalError(overlay, 'El título de la actividad es obligatorio.'); return; }
+        if (!data.fechaInicio || !data.fechaFin) { UI.modalError(overlay, 'Indica la fecha de inicio y de término.'); return; }
+        if (data.fechaFin < data.fechaInicio) { UI.modalError(overlay, 'El término no puede ser anterior al inicio.'); return; }
+        UI.clearModalError(overlay);
+        const done = UI.busy(ev.currentTarget);
+        const call = isEdit
+          ? App.rpc('updateGanttItem', it.ganttId, data)
+          : App.rpc('createGanttItem', Object.assign({ projectId: Gantt.projectId }, data));
+        call.then(res => {
+          UI.closeModal(overlay);
+          Gantt.data = res;
+          gtRender(false);
+          UI.toast(isEdit ? 'Actividad actualizada.' : 'Actividad creada.', 'ok');
+        }).catch(err => { done(); UI.modalError(overlay, err.message); });
+      });
+
+      const del = root.querySelector('[data-act="delete"]');
+      if (del) del.addEventListener('click', () => {
+        UI.confirmDialog('Eliminar actividad', 'Se quitará "' + it.titulo + '" de la carta Gantt.', 'Eliminar', true)
+          .then(yes => {
+            if (!yes) return;
+            App.rpc('deleteGanttItem', it.ganttId).then(res => {
+              UI.closeAllModals();
+              Gantt.data = res;
+              gtRender(false);
+              UI.toast('Actividad eliminada.', 'ok');
+            }).catch(App.handleError);
+          });
+      });
+    }
+  });
+}
+</script>

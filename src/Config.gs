@@ -9,7 +9,7 @@
 
 const APP = {
   NAME: 'Kanban Workspace',
-  VERSION: '1.0.0',
+  VERSION: '1.1.0',
 
   /**
    * Modo de despliegue de la Web App. Ver docs/ARCHITECTURE.md §2.
@@ -135,6 +135,8 @@ const PERMISSIONS = {
     'subtask.read',
     'subtask.create',
     'subtask.update',
+    'gantt.read',
+    'gantt.write',
     'comment.read',
     'comment.create',
     'comment.delete.own',
@@ -232,6 +234,31 @@ const SCHEMA = {
       ['porcentajeAvance', 'number'],
       ['responsable', 'string'],
       ['fechaVencimiento', 'date'],
+      ['fechaCreacion', 'datetime'],
+      ['fechaActualizacion', 'datetime'],
+      ['activo', 'bool']
+    ]
+  },
+
+  /**
+   * Actividades de la carta Gantt de un proyecto. Cada registro es una "cajita".
+   * Una fila del Gantt es el par (grupo, fila); varias actividades con el mismo
+   * par comparten línea. `orden` es el orden de la fila dentro del proyecto y
+   * se copia a todas las actividades de esa fila.
+   */
+  GANTT: {
+    name: 'GANTT',
+    idField: 'ganttId',
+    prefix: 'GNT',
+    fields: [
+      ['ganttId', 'string'],
+      ['projectId', 'string'],
+      ['grupo', 'string'],
+      ['fila', 'string'],
+      ['titulo', 'string'],
+      ['fechaInicio', 'date'],
+      ['fechaFin', 'date'],
+      ['orden', 'number'],
       ['fechaCreacion', 'datetime'],
       ['fechaActualizacion', 'datetime'],
       ['activo', 'bool']

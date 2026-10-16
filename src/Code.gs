@@ -203,6 +203,24 @@ function deleteSubtask(subtaskId) {
   return handle_('subtask.update', user => Subtasks_delete_(user, subtaskId));
 }
 
+/* ───────────────────────────── Carta Gantt ──────────────────────────── */
+
+function getGantt(projectId) {
+  return handle_('gantt.read', user => Gantt_list_(user, projectId));
+}
+
+function createGanttItem(data) {
+  return handle_('gantt.write', user => Gantt_create_(user, data));
+}
+
+function updateGanttItem(ganttId, data) {
+  return handle_('gantt.write', user => Gantt_update_(user, ganttId, data));
+}
+
+function deleteGanttItem(ganttId) {
+  return handle_('gantt.write', user => Gantt_delete_(user, ganttId));
+}
+
 /* ──────────────────────────── Comentarios ───────────────────────────── */
 
 function getComments(taskId) {

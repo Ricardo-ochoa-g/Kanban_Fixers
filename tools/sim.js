@@ -61,13 +61,13 @@ try {
 const ssId = store.props.SPREADSHEET_ID;
 const ss = store.spreadsheets[ssId];
 check('se creó el spreadsheet de datos', !!ss);
-check('se crearon las 7 hojas del esquema',
-  ss.getSheets().length === 7, 'hojas: ' + ss.getSheets().map(s => s.getName()).join(', '));
+check('se crearon las 8 hojas del esquema',
+  ss.getSheets().length === 8, 'hojas: ' + ss.getSheets().map(s => s.getName()).join(', '));
 check('se eliminó la hoja por defecto vacía', !ss.getSheetByName('Sheet1'));
 
 as(ownerEmail);
 check('setupApplication() es idempotente', (() => {
-  try { call('setupApplication'); return ss.getSheets().length === 7; }
+  try { call('setupApplication'); return ss.getSheets().length === 8; }
   catch (e) { return false; }
 })());
 
@@ -341,6 +341,64 @@ ok(call('updateAppConfig', 'ALLOW_USER_CREATE_PROJECT', 'false'), 'se vuelve a d
 as('ana@example.com');
 denied(call('createProject', { nombre: 'No debería poder' }),
   'y el USER vuelve a ser rechazado', 'FORBIDDEN');
+
+console.log('\n── 11b. Carta Gantt ────────────────────────────────────────');
+as('ana@example.com');
+let gRes = ok(call('createGanttItem', {
+  projectId: proj.projectId, grupo: 'Diseño', fila: 'Luis', titulo: 'Plataforma',
+  fechaInicio: '2026-09-10', fechaFin: '2026-09-30'
+}), 'un USER crea una actividad del Gantt');
+check('la actividad queda listada con su fila', gRes && gRes.items.length === 1 && gRes.items[0].fila === 'Luis');
+const gItem = gRes && gRes.items[0];
+
+as('ana@example.com');
+gRes = ok(call('createGanttItem', {
+  projectId: proj.projectId, grupo: 'Diseño', fila: 'Luis', titulo: 'Video',
+  fechaInicio: '2026-10-01', fechaFin: '2026-10-20'
+}), 'una segunda actividad puede compartir fila');
+check('comparten el mismo orden de fila',
+  gRes && gRes.items.length === 2 && gRes.items[0].orden === gRes.items[1].orden);
+
+as('ana@example.com');
+gRes = ok(call('createGanttItem', {
+  projectId: proj.projectId, grupo: 'Marketing', titulo: 'Investigar',
+  fechaInicio: '2026-09-01', fechaFin: '2026-09-15'
+}), 'sin fila indicada se usa el título');
+const gInv = gRes && gRes.items.filter(i => i.titulo === 'Investigar')[0];
+check('la fila nueva queda al final y toma el título', gInv && gInv.fila === 'Investigar' && gInv.orden > gItem.orden);
+
+as('ana@example.com');
+gRes = ok(call('updateGanttItem', gItem.ganttId, { fechaInicio: '2026-09-12', fechaFin: '2026-10-02' }),
+  'mover/extender una actividad actualiza sus fechas');
+check('las fechas se persisten', gRes && gRes.items.filter(i => i.ganttId === gItem.ganttId)[0].fechaInicio === '2026-09-12');
+as('ana@example.com');
+gRes = ok(call('updateGanttItem', gItem.ganttId, { grupo: 'Marketing', fila: 'Investigar' }),
+  'arrastrar a otra fila cambia grupo y fila');
+const gMoved = gRes && gRes.items.filter(i => i.ganttId === gItem.ganttId)[0];
+const gTarget = gRes && gRes.items.filter(i => i.titulo === 'Investigar')[0];
+check('adopta el orden de la fila destino', gMoved && gTarget && gMoved.orden === gTarget.orden);
+
+as('ana@example.com');
+denied(call('updateGanttItem', gItem.ganttId, { fechaInicio: '2026-12-01', fechaFin: '2026-11-01' }),
+  'el término no puede ser anterior al inicio', 'VALIDATION');
+as('ana@example.com');
+denied(call('createGanttItem', { projectId: proj.projectId, titulo: '', fechaInicio: '2026-09-01', fechaFin: '2026-09-02' }),
+  'el título es obligatorio', 'VALIDATION');
+as('ana@example.com');
+denied(call('createGanttItem', { projectId: proj.projectId, titulo: 'x', fechaInicio: '', fechaFin: '2026-09-02' }),
+  'la fecha de inicio es obligatoria', 'VALIDATION');
+as('desconocido@gmail.com');
+denied(call('getGantt', proj.projectId), 'una cuenta no registrada no ve el Gantt', 'UNAUTHORIZED');
+as('ana@example.com');
+denied(call('getGantt', 'PRJ-NO-EXISTE'), 'un proyecto inexistente se rechaza', 'NOT_FOUND');
+
+as('ana@example.com');
+gRes = ok(call('deleteGanttItem', gItem.ganttId), 'eliminar archiva la actividad');
+check('deja de listarse', gRes && gRes.items.every(i => i.ganttId !== gItem.ganttId));
+as(ownerEmail);
+const ganttAudit = ok(call('getAuditLog', { entidad: 'GANTT' }), 'el ADMIN consulta la auditoría del Gantt');
+check('las operaciones del Gantt quedan auditadas',
+  ganttAudit && (ganttAudit.rows || ganttAudit).length >= 5, JSON.stringify(ganttAudit).slice(0, 120));
 
 console.log('\n── 12. Rendimiento de acceso a la hoja ─────────────────────');
 Object.values(store.spreadsheets).forEach(s => s.getSheets().forEach(sh => { sh.reads = 0; sh.writes = 0; }));

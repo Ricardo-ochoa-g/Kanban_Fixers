@@ -30,7 +30,7 @@
 └───────────────────────────────────────────────────────────────────────────────┘
                                 │
                       Google Sheet privado (datastore)
-          USERS · PROJECTS · TASKS · SUBTASKS · COMMENTS · AUDIT_LOG · CONFIG
+          USERS · PROJECTS · TASKS · SUBTASKS · GANTT · COMMENTS · AUDIT_LOG · CONFIG
 ```
 
 Regla transversal: **el frontend nunca envía la identidad del usuario**. El

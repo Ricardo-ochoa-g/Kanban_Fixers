@@ -94,6 +94,7 @@ function loadProjects(filters) {
         if (act === 'archive') archiveProject(pid, filters);
         if (act === 'restore') restoreProject(pid, filters);
         if (act === 'board') App.go('kanban', { projectId: pid });
+        if (act === 'gantt') App.go('gantt', { projectId: pid });
       });
     });
   }).catch(err => {
@@ -141,6 +142,7 @@ function projectCard(p) {
 
     '<div class="proj-card-actions">' +
       '<button class="btn btn-sm" data-act="board" data-pid="' + UI.esc(p.projectId) + '">Abrir tablero</button>' +
+      '<button class="btn btn-sm" data-act="gantt" data-pid="' + UI.esc(p.projectId) + '">Gantt</button>' +
       (admin ? '<button class="btn btn-sm btn-ghost" data-act="edit" data-pid="' +
         UI.esc(p.projectId) + '">Editar</button>' : '') +
       (admin ? (p.activo

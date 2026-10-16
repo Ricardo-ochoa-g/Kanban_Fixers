@@ -563,6 +563,87 @@ table.data td.num { text-align: right; font-variant-numeric: tabular-nums; }
   .scrim { position: fixed; inset: 0; background: rgba(11,11,11,.4); z-index: 34; }
 }
 
+/* ───────────────────────────── Carta Gantt ───────────────────────────── */
+
+/* Paleta categórica fija (pasteles con texto oscuro): legible en ambos temas. */
+.gc-0 { background: #e6b8d0; } .gc-1 { background: #b8cbb5; } .gc-2 { background: #f1c4a0; }
+.gc-3 { background: #93cfdb; } .gc-4 { background: #c9b8e6; } .gc-5 { background: #e8d48f; }
+
+.gt-hint { margin: 0 0 10px; font-size: 12px; color: var(--ink-muted); }
+.gt-wrap {
+  position: relative; overflow: auto; max-height: calc(100vh - 200px);
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface);
+}
+.gt-inner { position: relative; min-width: 100%; }
+.gt-head {
+  display: flex; position: sticky; top: 0; z-index: 6;
+  background: var(--surface-2); border-bottom: 1px solid var(--line-strong);
+}
+.gt-corner {
+  position: sticky; left: 0; z-index: 7; flex: none; background: var(--surface-2);
+  display: flex; align-items: flex-end; padding: 8px 12px;
+  font-size: 11.5px; font-weight: 650; color: var(--ink-muted);
+  border-right: 1px solid var(--line-strong);
+}
+.gt-tl { flex: none; }
+.gt-uprow, .gt-lowrow { display: flex; }
+.gt-uc, .gt-lc {
+  flex: none; text-align: center; padding: 5px 4px; font-size: 12px;
+  border-left: 1px solid var(--line); white-space: nowrap; overflow: hidden;
+}
+.gt-uc {
+  font-weight: 650; text-transform: capitalize; color: var(--accent-strong);
+  background: var(--accent-soft); border-bottom: 1px solid var(--line);
+}
+.gt-lc { color: var(--ink-2); }
+.gt-lc.is-today { font-weight: 700; color: var(--accent-strong); }
+
+.gt-body { position: relative; }
+.gt-lines { position: absolute; top: 0; bottom: 0; pointer-events: none; z-index: 1; }
+.gt-vline { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--line); }
+.gt-today { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--critical); opacity: .55; }
+
+.gt-group { display: flex; border-bottom: 1px solid var(--line-strong); }
+.gt-gcell {
+  position: sticky; left: 0; z-index: 4; flex: none; width: 34px; overflow: hidden;
+  font-size: 12px; font-weight: 650; color: #1b1b1b;
+}
+/* El texto vertical va absoluto para que no estire la altura de grupos de una sola fila. */
+.gt-gcell > span {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  writing-mode: vertical-rl; padding: 6px 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.gt-grows { flex: 1 0 auto; }
+.gt-row { display: flex; border-bottom: 1px solid var(--line); }
+.gt-row:last-child { border-bottom: 0; }
+.gt-rlabel {
+  position: sticky; left: 34px; z-index: 3; flex: none; width: 176px; background: var(--surface);
+  display: flex; align-items: center; padding: 0 10px; font-size: 12.5px;
+  border-right: 1px solid var(--line-strong);
+}
+.gt-rlabel span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gt-lane { position: relative; flex: none; z-index: 2; }
+.gt-lane.drop-target { background: var(--accent-soft); }
+
+.gt-bar {
+  position: absolute; height: 30px; display: flex; align-items: center;
+  padding: 0 12px; border-radius: 15px; box-shadow: var(--shadow-1);
+  font-size: 12px; font-weight: 600; color: #1b1b1b; white-space: nowrap;
+  cursor: grab; user-select: none; -webkit-user-select: none; touch-action: none;
+}
+.gt-bar .t { overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+.gt-bar .h { position: absolute; top: 0; bottom: 0; width: 10px; cursor: ew-resize; }
+.gt-bar .h.l { left: 0; border-radius: 15px 0 0 15px; }
+.gt-bar .h.r { right: 0; border-radius: 0 15px 15px 0; }
+.gt-bar:hover .h { background: rgba(0,0,0,.14); }
+.gt-bar.dragging { cursor: grabbing; z-index: 10; opacity: .92; box-shadow: var(--shadow-2); }
+.gt-ro .gt-bar { cursor: default; }
+.gt-ro .gt-bar .h { display: none; }
+.gt-tip {
+  position: fixed; z-index: 300; pointer-events: none; padding: 3px 8px; border-radius: 6px;
+  background: var(--ink); color: var(--page); font-size: 11.5px; white-space: nowrap;
+}
+
 @media print {
   .sidebar, .topbar-actions, #toasts, .col-add { display: none !important; }
 }

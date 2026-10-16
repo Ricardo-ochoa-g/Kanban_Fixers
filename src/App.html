@@ -434,6 +434,7 @@ const App = (function () {
       { route: 'dashboard', ico: '&#9632;', label: 'Dashboard' },
       { route: 'projects', ico: '&#128193;', label: 'Proyectos' },
       { route: 'kanban', ico: '&#9783;', label: 'Kanban' },
+      { route: 'gantt', ico: '&#128197;', label: 'Gantt' },
       { route: 'mytasks', ico: '&#10003;', label: 'Mis tareas' }
     ];
     const admin = [
@@ -474,6 +475,7 @@ const App = (function () {
       if (e.key === 'd') go('dashboard');
       if (e.key === 'p') go('projects');
       if (e.key === 'k') go('kanban');
+      if (e.key === 'g') go('gantt');
       if (e.key === 'm') go('mytasks');
     });
   }

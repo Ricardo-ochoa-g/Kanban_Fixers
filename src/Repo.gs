@@ -454,6 +454,7 @@ function tUsers_()    { return table_('USERS'); }
 function tProjects_() { return table_('PROJECTS'); }
 function tTasks_()    { return table_('TASKS'); }
 function tSubtasks_() { return table_('SUBTASKS'); }
+function tGantt_()    { return table_('GANTT'); }
 function tComments_() { return table_('COMMENTS'); }
 function tAudit_()    { return table_('AUDIT_LOG'); }
 function tConfig_()   { return table_('CONFIG'); }

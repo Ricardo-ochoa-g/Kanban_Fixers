@@ -137,7 +137,7 @@ if (SCHEMA) {
 
   // Campos escritos vía insert/update: literales { campo: ... } en los módulos.
   const dataFiles = ['Users.gs', 'Projects.gs', 'Tasks.gs', 'Subtasks.gs', 'Comments.gs',
-    'Audit.gs', 'Setup.gs', 'Dashboard.gs'];
+    'Audit.gs', 'Setup.gs', 'Dashboard.gs', 'Gantt.gs'];
   const writeCalls = [];
   dataFiles.forEach(f => {
     const src = read(f);
