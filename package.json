@@ -1,0 +1,15 @@
+{
+  "name": "kanban-workspace-gas",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Aplicación Kanban sobre Google Apps Script + Google Sheets. Este package.json solo sirve para las herramientas de verificación locales; no se sube a Apps Script.",
+  "scripts": {
+    "verify": "node tools/verify.js",
+    "test:backend": "node tools/sim.js",
+    "test:ui": "node tools/uitest.js",
+    "test": "node tools/verify.js && node tools/sim.js && node tools/uitest.js"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1"
+  }
+}

@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <title><?= appName ?></title>
+  <?!= include('Styles'); ?>
+</head>
+<body>
+
+  <!-- Pantalla de carga -->
+  <div id="boot" class="boot">
+    <div class="boot-inner">
+      <div class="spinner" role="status" aria-live="polite"></div>
+      <div style="font-weight:600"><?= appName ?></div>
+      <div style="font-size:12px;color:var(--ink-muted);margin-top:4px">Verificando tu acceso…</div>
+    </div>
+  </div>
+
+  <!-- Acceso denegado: se arma desde el contrato de error del backend -->
+  <div id="denied" class="denied hidden">
+    <div class="denied-inner">
+      <div class="lock-badge" aria-hidden="true">&#128274;</div>
+      <h1 id="denied-title">Acceso restringido</h1>
+      <p id="denied-msg"></p>
+      <p class="email" id="denied-email"></p>
+      <div style="margin-top:18px">
+        <button class="btn" id="denied-retry">Reintentar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Aplicación -->
+  <div id="app" class="app hidden">
+
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">KW</div>
+        <div>
+          <div class="brand-name"><?= appName ?></div>
+          <div class="brand-sub">v<?= appVersion ?></div>
+        </div>
+      </div>
+
+      <nav class="nav" id="nav" aria-label="Navegación principal"></nav>
+
+      <div class="sidebar-foot">
+        <div class="who">
+          <div class="avatar" id="who-avatar"></div>
+          <div style="min-width:0">
+            <div class="who-name" id="who-name"></div>
+            <div class="who-role" id="who-role"></div>
+          </div>
+        </div>
+        <button class="nav-item" id="btn-theme" style="width:100%">
+          <span class="ico" aria-hidden="true">&#9681;</span><span>Cambiar tema</span>
+        </button>
+      </div>
+    </aside>
+
+    <div class="main">
+      <header class="topbar">
+        <button class="btn btn-ghost btn-icon menu-toggle" id="btn-menu" aria-label="Abrir menú">&#9776;</button>
+        <div>
+          <h1 id="page-title">Dashboard</h1>
+          <div class="sub" id="page-sub"></div>
+        </div>
+        <div class="topbar-actions" id="page-actions"></div>
+      </header>
+      <section class="view" id="view" role="main"></section>
+    </div>
+  </div>
+
+  <div id="modal-root"></div>
+  <div id="toasts" aria-live="polite" aria-atomic="false"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.2/Sortable.min.js"></script>
+
+  <?!= include('App'); ?>
+  <?!= include('ViewDashboard'); ?>
+  <?!= include('ViewProjects'); ?>
+  <?!= include('ViewKanban'); ?>
+  <?!= include('ViewTaskDetail'); ?>
+  <?!= include('ViewMyTasks'); ?>
+  <?!= include('ViewAdmin'); ?>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      document.getElementById('denied-retry')
+        .addEventListener('click', function () { window.location.reload(); });
+      App.start();
+    });
+  </script>
+</body>
+</html>

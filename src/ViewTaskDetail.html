@@ -1,0 +1,489 @@
+<script>
+/* ==========================================================================
+   ViewTaskDetail.html — Formulario de tarea y panel de detalle.
+
+   El panel de detalle guarda cada campo en el momento en que cambia (un solo
+   RPC por cambio, con el patch mínimo), de modo que el flujo habitual
+   —mover, asignar, avanzar— no obliga a abrir un formulario.
+   ========================================================================== */
+
+var Detail = { taskId: null, overlay: null, data: null };
+
+const FIELD_LABEL = {
+  titulo: 'título', descripcion: 'descripción', estado: 'estado',
+  prioridad: 'prioridad', porcentajeAvance: 'avance', avanceManual: 'modo de avance',
+  responsable: 'responsable', fechaInicio: 'fecha de inicio',
+  fechaVencimiento: 'fecha de vencimiento', activo: 'estado del registro',
+  nombre: 'nombre', rol: 'rol', valor: 'valor', completada: 'completada'
+};
+
+/* ─────────────────────── Alta / edición de tarea ───────────────────────── */
+
+/**
+ * @param {?Object} task      Tarea a editar, o null para crear.
+ * @param {string}  projectId Proyecto por defecto al crear.
+ * @param {string}  estado    Columna por defecto al crear.
+ */
+function openTaskModal(task, projectId, estado) {
+  const t = task || {};
+  const isEdit = !!task;
+  const projects = App.state.projects.filter(p => p.activo);
+
+  const overlay = UI.openModal({
+    title: isEdit ? 'Editar tarea' : 'Nueva tarea',
+    subtitle: isEdit ? t.titulo : 'Se creará al final de la columna seleccionada',
+    body:
+      '<label class="field"><span>Título *</span>' +
+        '<input type="text" name="titulo" maxlength="300" value="' + UI.esc(t.titulo || '') + '"></label>' +
+      (isEdit ? '' :
+        '<label class="field"><span>Proyecto *</span><select name="projectId">' +
+          projects.map(p => '<option value="' + UI.esc(p.projectId) + '"' +
+            (p.projectId === (projectId || App.state.currentProjectId) ? ' selected' : '') + '>' +
+            UI.esc(p.nombre) + '</option>').join('') +
+        '</select></label>') +
+      '<label class="field"><span>Descripción</span>' +
+        '<textarea name="descripcion" maxlength="10000">' + UI.esc(t.descripcion || '') + '</textarea></label>' +
+      '<div class="grid-2">' +
+        '<label class="field"><span>Estado</span><select name="estado">' +
+          App.statusOptions(t.estado || estado || 'BACKLOG') + '</select></label>' +
+        '<label class="field"><span>Prioridad</span><select name="prioridad">' +
+          App.priorityOptions(t.prioridad || 'MEDIA') + '</select></label>' +
+      '</div>' +
+      '<label class="field"><span>Responsable</span><select name="responsable">' +
+        App.assigneeOptions(t.responsable || '') + '</select></label>' +
+      '<div class="grid-2">' +
+        '<label class="field"><span>Fecha de inicio</span>' +
+          '<input type="date" name="fechaInicio" value="' + UI.esc(t.fechaInicio || '') + '"></label>' +
+        '<label class="field"><span>Fecha de vencimiento</span>' +
+          '<input type="date" name="fechaVencimiento" value="' + UI.esc(t.fechaVencimiento || '') + '"></label>' +
+      '</div>' +
+      '<label class="field" style="margin-bottom:0"><span>% de avance</span>' +
+        '<input type="number" name="porcentajeAvance" min="0" max="100" step="5" value="' +
+          (t.porcentajeAvance === undefined ? 0 : Number(t.porcentajeAvance)) + '"></label>',
+    footer:
+      '<button class="btn" data-act="cancel">Cancelar</button>' +
+      '<button class="btn btn-primary" data-act="save">' +
+        (isEdit ? 'Guardar cambios' : 'Crear tarea') + '</button>',
+    onMount: root => {
+      root.querySelector('[data-act="cancel"]').addEventListener('click', () => UI.closeModal(overlay));
+      root.querySelector('[data-act="save"]').addEventListener('click', ev => {
+        const data = UI.readForm(root);
+        if (!String(data.titulo || '').trim()) {
+          UI.modalError(overlay, 'El título de la tarea es obligatorio.');
+          return;
+        }
+        UI.clearModalError(overlay);
+        const done = UI.busy(ev.currentTarget);
+        const call = isEdit
+          ? App.rpc('updateTask', t.taskId, data)
+          : App.rpc('createTask', data);
+        call.then(() => {
+          UI.closeModal(overlay);
+          UI.toast(isEdit ? 'Tarea actualizada.' : 'Tarea creada correctamente.', 'ok');
+          if (Detail.taskId && Detail.taskId === t.taskId) return afterTaskChange();
+          return reloadBoardIfVisible();
+        }).catch(err => {
+          done();
+          UI.modalError(overlay, err.message);
+        });
+      });
+    }
+  });
+}
+
+/* ───────────────────────────── Panel de detalle ────────────────────────── */
+
+function openTaskDetail(taskId) {
+  Detail.taskId = taskId;
+  Detail.overlay = UI.openModal({
+    title: 'Cargando tarea…',
+    size: 'lg',
+    nopad: true,
+    body: '<div style="padding:18px">' + UI.skeleton(3) + '</div>',
+    onClose: () => { Detail.taskId = null; Detail.overlay = null; Detail.data = null; }
+  });
+  renderDetail(taskId);
+}
+
+function renderDetail(taskId) {
+  return App.rpc('getTask', taskId)
+    .then(d => {
+      if (!Detail.overlay) return;
+      Detail.data = d;
+      const t = d.task;
+      Detail.overlay.querySelector('.modal-head h2').textContent = t.titulo;
+      let sub = Detail.overlay.querySelector('.modal-head .sub');
+      if (!sub) {
+        sub = document.createElement('div');
+        sub.className = 'sub';
+        Detail.overlay.querySelector('.modal-head h2').parentNode.appendChild(sub);
+      }
+      sub.textContent = t.proyecto + ' · ' + t.taskId;
+      Detail.overlay.querySelector('.modal-body').innerHTML = detailHtml(d);
+      bindDetail(d);
+    })
+    .catch(err => {
+      if (Detail.overlay) {
+        Detail.overlay.querySelector('.modal-body').innerHTML =
+          '<div style="padding:18px">' +
+          UI.empty('&#9888;', 'No se pudo cargar la tarea', err.message) + '</div>';
+      }
+      App.handleError(err);
+    });
+}
+
+function detailHtml(d) {
+  const t = d.task;
+  const subs = d.subtasks || [];
+  const done = subs.filter(s => s.completada).length;
+
+  return '<div class="detail">' +
+
+    /* ───── Columna principal ───── */
+    '<div class="detail-main">' +
+      '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:14px">' +
+        UI.prioChip(t.prioridad) + UI.dueBadge(t) +
+        '<span class="chip">' + UI.esc(App.statusLabel(t.estado)) + '</span>' +
+        '<span style="margin-left:auto;display:flex;gap:6px">' +
+          '<button class="btn btn-sm" data-d="edit">Editar</button>' +
+          '<button class="btn btn-sm btn-ghost" data-d="duplicate">Duplicar</button>' +
+          (App.state.user.isAdmin
+            ? '<button class="btn btn-sm btn-danger" data-d="archive">Archivar</button>' : '') +
+        '</span>' +
+      '</div>' +
+
+      '<h3>Descripción</h3>' +
+      (t.descripcion
+        ? '<p class="detail-desc">' + UI.esc(t.descripcion) + '</p>'
+        : '<p class="detail-desc" style="color:var(--ink-muted)">Sin descripción.</p>') +
+
+      '<h3>Subtareas <span style="font-weight:600;color:var(--ink-2);text-transform:none;' +
+        'letter-spacing:0">' + (subs.length ? done + ' / ' + subs.length + ' completadas' : '') +
+        '</span></h3>' +
+      (subs.length ? UI.meter(Math.round(subs.length ? done / subs.length * 100 : 0)) : '') +
+      '<div class="sub-list" style="margin-top:8px">' +
+        (subs.length
+          ? subs.map(subtaskRow).join('')
+          : '<div style="font-size:12.5px;color:var(--ink-muted);padding:4px 0">' +
+            'Sin subtareas. Agrega la primera abajo.</div>') +
+      '</div>' +
+      '<div class="add-row">' +
+        '<input type="text" id="sub-new" maxlength="300" placeholder="Nueva subtarea y Enter">' +
+        '<button class="btn btn-primary btn-sm" data-d="add-sub">Agregar</button>' +
+      '</div>' +
+
+      '<h3>Comentarios</h3>' +
+      '<div class="add-row" style="margin-bottom:10px">' +
+        '<input type="text" id="cmt-new" maxlength="4000" placeholder="Escribe un comentario y Enter">' +
+        '<button class="btn btn-primary btn-sm" data-d="add-cmt">Comentar</button>' +
+      '</div>' +
+      '<div id="cmt-list">' +
+        ((d.comments || []).length
+          ? d.comments.map(commentRow).join('')
+          : '<div style="font-size:12.5px;color:var(--ink-muted)">Sin comentarios.</div>') +
+      '</div>' +
+    '</div>' +
+
+    /* ───── Panel lateral ───── */
+    '<aside class="detail-side">' +
+      '<h3>Avance</h3>' +
+      '<div style="display:flex;gap:8px;align-items:center">' +
+        '<input type="number" id="d-pct" min="0" max="100" step="5" value="' +
+          Number(t.porcentajeAvance) + '" style="width:84px"' +
+          (t.avanceManual ? '' : ' disabled') + '>' +
+        '<span style="font-size:12px;color:var(--ink-muted)">%</span>' +
+      '</div>' +
+      '<label class="inline-check" style="margin-top:8px">' +
+        '<input type="checkbox" id="d-auto"' + (t.avanceManual ? '' : ' checked') + '>' +
+        'Calcular desde subtareas</label>' +
+
+      '<h3>Estado</h3>' +
+      '<select id="d-estado">' + App.statusOptions(t.estado) + '</select>' +
+
+      '<h3>Prioridad</h3>' +
+      '<select id="d-prioridad">' + App.priorityOptions(t.prioridad) + '</select>' +
+
+      '<h3>Responsable</h3>' +
+      '<select id="d-responsable">' + App.assigneeOptions(t.responsable) + '</select>' +
+
+      '<h3>Fechas</h3>' +
+      '<label class="field"><span>Inicio</span>' +
+        '<input type="date" id="d-inicio" value="' + UI.esc(t.fechaInicio || '') + '"></label>' +
+      '<label class="field"><span>Vencimiento</span>' +
+        '<input type="date" id="d-venc" value="' + UI.esc(t.fechaVencimiento || '') + '"></label>' +
+      (t.fechaCompletado
+        ? '<div style="font-size:12px;color:var(--good)"><span aria-hidden="true">&#10003;</span> ' +
+          'Completada el ' + UI.esc(UI.fmtDateTime(t.fechaCompletado)) + '</div>'
+        : '') +
+
+      '<h3>Historial</h3>' +
+      ((d.history || []).length
+        ? '<ul class="history">' + d.history.map(historyRow).join('') + '</ul>'
+        : '<div style="font-size:12px;color:var(--ink-muted)">Sin cambios registrados.</div>') +
+
+      '<div style="margin-top:16px;font-size:11px;color:var(--ink-muted);line-height:1.6">' +
+        'Creada por ' + UI.esc(t.creadoPor || '—') + '<br>' +
+        UI.esc(UI.fmtDateTime(t.fechaCreacion)) +
+        (t.fechaActualizacion
+          ? '<br>Última edición ' + UI.esc(UI.fmtRelative(t.fechaActualizacion))
+          : '') +
+      '</div>' +
+    '</aside>' +
+  '</div>';
+}
+
+function subtaskRow(s) {
+  return '<div class="sub-item' + (s.completada ? ' done' : '') + '" data-sid="' + UI.esc(s.subtaskId) + '">' +
+    '<input type="checkbox" data-s="toggle"' + (s.completada ? ' checked' : '') +
+      ' aria-label="Marcar subtarea"> ' +
+    '<span class="sub-title">' + UI.esc(s.titulo) + '</span>' +
+    (s.responsable ? '<span class="sub-meta">' + UI.esc(s.responsableNombre || s.responsable) + '</span>' : '') +
+    (s.fechaVencimiento ? '<span class="sub-meta">' + UI.esc(UI.fmtDateShort(s.fechaVencimiento)) + '</span>' : '') +
+    '<span class="sub-progress">' + Number(s.porcentajeAvance) + '%</span>' +
+    '<button class="btn btn-sm btn-ghost" data-s="edit" title="Editar subtarea">&#9998;</button>' +
+    '<button class="btn btn-sm btn-ghost" data-s="del" title="Eliminar subtarea">&times;</button>' +
+  '</div>';
+}
+
+function commentRow(c) {
+  const own = c.userId === App.state.user.userId || App.state.user.isAdmin;
+  return '<div class="comment" data-cid="' + UI.esc(c.commentId) + '">' +
+    '<div class="comment-head">' +
+      UI.avatarXs(c.autor, c.email) +
+      '<span class="comment-author">' + UI.esc(c.autor) + '</span>' +
+      '<span class="comment-date">' + UI.esc(UI.fmtDateTime(c.fechaCreacion)) + '</span>' +
+      (own ? '<button class="btn btn-sm btn-ghost" data-c="del" style="margin-left:auto" ' +
+        'title="Eliminar comentario">&times;</button>' : '') +
+    '</div>' +
+    '<div class="comment-body">' + UI.esc(c.comentario) + '</div>' +
+  '</div>';
+}
+
+/** Convierte una entrada de auditoría en una línea legible. */
+function historyRow(h) {
+  const who = UI.esc(h.autor || h.email);
+  const b = h.before || {}, a = h.after || {};
+  let text;
+
+  if (h.accion === 'CREATE') {
+    text = '<b>' + who + '</b> creó la tarea';
+  } else if (h.accion === 'MOVE' || (h.accion === 'STATUS_CHANGE' && a.estado !== undefined)) {
+    text = '<b>' + who + '</b> cambió estado de <b>' + UI.esc(App.statusLabel(b.estado)) +
+      '</b> &rarr; <b>' + UI.esc(App.statusLabel(a.estado)) + '</b>';
+  } else if (h.accion === 'ASSIGN') {
+    text = '<b>' + who + '</b> asignó a <b>' + UI.esc(a.responsable || 'nadie') + '</b>';
+  } else if (h.accion === 'PROGRESS') {
+    text = '<b>' + who + '</b> actualizó el avance a <b>' + UI.esc(a.porcentajeAvance) + '%</b>';
+  } else if (h.accion === 'COMMENT') {
+    text = '<b>' + who + '</b> comentó';
+  } else if (h.accion === 'DELETE') {
+    text = '<b>' + who + '</b> archivó la tarea';
+  } else if (h.accion === 'RESTORE') {
+    text = '<b>' + who + '</b> reactivó la tarea';
+  } else {
+    const fields = Object.keys(a).map(k => FIELD_LABEL[k] || k);
+    text = '<b>' + who + '</b> actualizó ' +
+      (fields.length ? UI.esc(fields.join(', ')) : 'la tarea');
+  }
+
+  return '<li><div class="h-what">' + text + '</div>' +
+    '<div class="h-when">' + UI.esc(UI.fmtDateTime(h.fecha)) + '</div></li>';
+}
+
+/* ──────────────────────────── Interacciones ────────────────────────────── */
+
+function bindDetail(d) {
+  const root = Detail.overlay;
+  const t = d.task;
+
+  /* Acciones de cabecera */
+  root.querySelectorAll('[data-d]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const act = btn.getAttribute('data-d');
+      if (act === 'edit') openTaskModal(t, t.projectId, t.estado);
+      if (act === 'duplicate') duplicateTask(t);
+      if (act === 'archive') archiveTask(t);
+      if (act === 'add-sub') addSubtask();
+      if (act === 'add-cmt') addComment();
+    });
+  });
+
+  const subInput = root.querySelector('#sub-new');
+  if (subInput) subInput.addEventListener('keydown', e => { if (e.key === 'Enter') addSubtask(); });
+  const cmtInput = root.querySelector('#cmt-new');
+  if (cmtInput) cmtInput.addEventListener('keydown', e => { if (e.key === 'Enter') addComment(); });
+
+  /* Campos del panel lateral: cada cambio es un patch mínimo */
+  const patchField = (id, field, transform) => {
+    const el = root.querySelector('#' + id);
+    if (!el) return;
+    el.addEventListener('change', () => {
+      const value = transform ? transform(el) : el.value;
+      const patch = {};
+      patch[field] = value;
+      saveTaskPatch(patch);
+    });
+  };
+
+  patchField('d-estado', 'estado');
+  patchField('d-prioridad', 'prioridad');
+  patchField('d-responsable', 'responsable');
+  patchField('d-inicio', 'fechaInicio');
+  patchField('d-venc', 'fechaVencimiento');
+  patchField('d-pct', 'porcentajeAvance', el => Number(el.value));
+
+  const auto = root.querySelector('#d-auto');
+  if (auto) {
+    auto.addEventListener('change', () => {
+      const pct = root.querySelector('#d-pct');
+      if (pct) pct.disabled = auto.checked;
+      saveTaskPatch({ avanceManual: !auto.checked });
+    });
+  }
+
+  /* Subtareas */
+  root.querySelectorAll('.sub-item').forEach(row => {
+    const sid = row.getAttribute('data-sid');
+    const sub = (d.subtasks || []).filter(s => s.subtaskId === sid)[0];
+    row.querySelector('[data-s="toggle"]').addEventListener('change', e => {
+      saveSubtask(sid, { completada: e.target.checked });
+    });
+    row.querySelector('[data-s="edit"]').addEventListener('click', () => openSubtaskModal(sub));
+    row.querySelector('[data-s="del"]').addEventListener('click', () => {
+      UI.confirmDialog('Eliminar subtarea',
+        'Se eliminará "' + (sub ? sub.titulo : '') + '". Queda registrada en la auditoría.',
+        'Eliminar', true).then(yes => {
+          if (!yes) return;
+          App.rpc('deleteSubtask', sid)
+            .then(() => { UI.toast('Subtarea eliminada.', 'ok'); return afterTaskChange(); })
+            .catch(App.handleError);
+        });
+    });
+  });
+
+  /* Comentarios */
+  root.querySelectorAll('.comment [data-c="del"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const cid = btn.closest('.comment').getAttribute('data-cid');
+      UI.confirmDialog('Eliminar comentario', '¿Eliminar este comentario?', 'Eliminar', true)
+        .then(yes => {
+          if (!yes) return;
+          App.rpc('deleteComment', cid)
+            .then(() => { UI.toast('Comentario eliminado.', 'ok'); return renderDetail(Detail.taskId); })
+            .catch(App.handleError);
+        });
+    });
+  });
+}
+
+function saveTaskPatch(patch) {
+  const id = Detail.taskId;
+  return App.rpc('updateTask', id, patch)
+    .then(() => { UI.toast('Tarea actualizada.', 'ok'); return afterTaskChange(); })
+    .catch(err => {
+      App.handleError(err);
+      return renderDetail(id); // revierte la UI al estado real del servidor
+    });
+}
+
+function addSubtask() {
+  const input = Detail.overlay.querySelector('#sub-new');
+  const titulo = (input.value || '').trim();
+  if (!titulo) { input.focus(); return; }
+  input.disabled = true;
+  App.rpc('createSubtask', { taskId: Detail.taskId, titulo: titulo })
+    .then(() => { UI.toast('Subtarea creada.', 'ok'); return afterTaskChange(); })
+    .catch(err => { input.disabled = false; App.handleError(err); });
+}
+
+function saveSubtask(subtaskId, patch) {
+  return App.rpc('updateSubtask', subtaskId, patch)
+    .then(() => { UI.toast('Subtarea actualizada.', 'ok'); return afterTaskChange(); })
+    .catch(err => { App.handleError(err); return renderDetail(Detail.taskId); });
+}
+
+function openSubtaskModal(sub) {
+  if (!sub) return;
+  const overlay = UI.openModal({
+    title: 'Editar subtarea',
+    body:
+      '<label class="field"><span>Título *</span>' +
+        '<input type="text" name="titulo" maxlength="300" value="' + UI.esc(sub.titulo) + '"></label>' +
+      '<label class="field"><span>Descripción</span>' +
+        '<textarea name="descripcion" maxlength="2000">' + UI.esc(sub.descripcion || '') + '</textarea></label>' +
+      '<label class="field"><span>Responsable</span><select name="responsable">' +
+        App.assigneeOptions(sub.responsable || '') + '</select></label>' +
+      '<div class="grid-2">' +
+        '<label class="field"><span>Vencimiento</span>' +
+          '<input type="date" name="fechaVencimiento" value="' + UI.esc(sub.fechaVencimiento || '') + '"></label>' +
+        '<label class="field"><span>% de avance</span>' +
+          '<input type="number" name="porcentajeAvance" min="0" max="100" step="5" value="' +
+            Number(sub.porcentajeAvance) + '"></label>' +
+      '</div>' +
+      '<label class="inline-check" style="margin-bottom:0">' +
+        '<input type="checkbox" name="completada"' + (sub.completada ? ' checked' : '') + '> Completada</label>',
+    footer:
+      '<button class="btn" data-act="cancel">Cancelar</button>' +
+      '<button class="btn btn-primary" data-act="save">Guardar</button>',
+    onMount: root => {
+      root.querySelector('[data-act="cancel"]').addEventListener('click', () => UI.closeModal(overlay));
+      root.querySelector('[data-act="save"]').addEventListener('click', ev => {
+        const data = UI.readForm(root);
+        if (!String(data.titulo || '').trim()) {
+          UI.modalError(overlay, 'El título es obligatorio.');
+          return;
+        }
+        const done = UI.busy(ev.currentTarget);
+        App.rpc('updateSubtask', sub.subtaskId, data)
+          .then(() => {
+            UI.closeModal(overlay);
+            UI.toast('Subtarea actualizada.', 'ok');
+            return afterTaskChange();
+          })
+          .catch(err => { done(); UI.modalError(overlay, err.message); });
+      });
+    }
+  });
+}
+
+function addComment() {
+  const input = Detail.overlay.querySelector('#cmt-new');
+  const texto = (input.value || '').trim();
+  if (!texto) { input.focus(); return; }
+  input.disabled = true;
+  App.rpc('addComment', Detail.taskId, texto)
+    .then(() => { UI.toast('Comentario agregado.', 'ok'); return renderDetail(Detail.taskId); })
+    .catch(err => { input.disabled = false; App.handleError(err); });
+}
+
+function duplicateTask(t) {
+  App.rpc('duplicateTask', t.taskId)
+    .then(() => {
+      UI.toast('Tarea duplicada.', 'ok');
+      UI.closeModal(Detail.overlay);
+      return reloadBoardIfVisible();
+    })
+    .catch(App.handleError);
+}
+
+function archiveTask(t) {
+  UI.confirmDialog('Archivar tarea',
+    'La tarea "' + t.titulo + '" dejará de aparecer en el tablero. El historial se conserva.',
+    'Archivar', true).then(yes => {
+      if (!yes) return;
+      App.rpc('archiveTask', t.taskId)
+        .then(() => {
+          UI.toast('Tarea archivada.', 'ok');
+          UI.closeModal(Detail.overlay);
+          return reloadBoardIfVisible();
+        })
+        .catch(App.handleError);
+    });
+}
+
+/** Redibuja el detalle y, detrás, el tablero o el listado que esté activo. */
+function afterTaskChange() {
+  const p = renderDetail(Detail.taskId);
+  return p.then(() => reloadBoardIfVisible());
+}
+</script>

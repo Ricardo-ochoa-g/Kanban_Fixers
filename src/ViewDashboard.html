@@ -1,0 +1,159 @@
+<script>
+/* ==========================================================================
+   ViewDashboard.html — Resumen ejecutivo.
+
+   Decisiones de visualización:
+     · Cada gráfico muestra UNA medida (conteo o % de avance) sobre categorías
+       ordenadas, así que usa un solo tono y no necesita leyenda: el título
+       nombra la serie y cada barra lleva su valor como etiqueta directa.
+     · "Tareas por prioridad" usa la rampa ordinal de un tono (4 pasos
+       validados) porque BAJA→CRÍTICA es un orden, no identidades.
+     · Los colores de estado (riesgo, vencidas) van siempre con icono y texto:
+       el color nunca carga el significado por sí solo.
+     · El hover aporta el dato que no está etiquetado (la participación sobre
+       el total) mediante el title del elemento.
+   ========================================================================== */
+
+App.registerView('dashboard', {
+  title: 'Dashboard',
+
+  render: function (view) {
+    return App.rpc('getDashboard').then(d => {
+      App.setHeader('Dashboard', 'Resumen de proyectos y tareas visibles para tu cuenta',
+        '<button class="btn" id="dash-refresh">&#8635; Actualizar</button>');
+
+      view.innerHTML = renderKpis(d.kpis) + renderCharts(d);
+
+      const btn = document.getElementById('dash-refresh');
+      if (btn) btn.addEventListener('click', () => App.refresh());
+
+      view.querySelectorAll('[data-open-project]').forEach(el => {
+        el.addEventListener('click', () => {
+          App.go('kanban', { projectId: el.getAttribute('data-open-project') });
+        });
+      });
+      view.querySelectorAll('[data-goto]').forEach(el => {
+        el.addEventListener('click', () => App.go(el.getAttribute('data-goto')));
+      });
+    });
+  }
+});
+
+function renderKpis(k) {
+  const tile = (label, value, foot, alert) =>
+    '<div class="kpi' + (alert ? ' alert' : '') + '">' +
+      '<div class="k-label">' + UI.esc(label) + '</div>' +
+      '<div class="k-value">' + UI.esc(String(value)) + '</div>' +
+      (foot ? '<div class="k-foot">' + foot + '</div>' : '') +
+    '</div>';
+
+  return '<div class="kpis">' +
+    tile('Proyectos activos', k.proyectosActivos,
+      k.proyectosEnRiesgo
+        ? '<span aria-hidden="true">&#9888;</span> ' + k.proyectosEnRiesgo + ' en riesgo'
+        : 'ninguno en riesgo',
+      k.proyectosEnRiesgo > 0) +
+    tile('Tareas pendientes', k.tareasPendientes, k.tareasTotales + ' en total') +
+    tile('En ejecución', k.tareasDoing, 'columna Doing') +
+    tile('Vencidas', k.tareasVencidas,
+      k.tareasPorVencer ? k.tareasPorVencer + ' por vencer' : 'sin atrasos',
+      k.tareasVencidas > 0) +
+    tile('Completadas', k.tareasCompletadas,
+      k.tareasTotales ? Math.round(k.tareasCompletadas / k.tareasTotales * 100) + '% del total' : '—') +
+    tile('Avance promedio', k.avancePromedio + '%', 'sobre tareas activas') +
+    tile('Mis tareas', k.misTareas,
+      k.misTareasVencidas
+        ? '<span aria-hidden="true">&#9888;</span> ' + k.misTareasVencidas + ' vencidas'
+        : 'asignadas a mí',
+      k.misTareasVencidas > 0) +
+  '</div>';
+}
+
+function renderCharts(d) {
+  return '<div class="charts">' +
+    chartCard('Tareas por estado', 'Conteo de tareas activas en cada columna del tablero',
+      barChart(d.porEstado.map(r => ({ label: r.label, value: r.valor })), null)) +
+    chartCard('Tareas por prioridad', 'Conteo de tareas activas en cada nivel de prioridad',
+      barChart(d.porPrioridad.map(r => ({
+        label: UI.PRIO_LABEL[r.prioridad] || r.prioridad, value: r.valor
+      })), 'ordinal')) +
+    chartCard('Avance por proyecto', 'Promedio de avance de las tareas de cada proyecto',
+      progressChart(d.avanceProyectos)) +
+    riskCard(d.proyectosEnRiesgo) +
+  '</div>';
+}
+
+function chartCard(title, subtitle, bodyHtml) {
+  return '<div class="card">' +
+    '<div class="card-head"><div><h2>' + UI.esc(title) + '</h2>' +
+    '<div class="sub">' + UI.esc(subtitle) + '</div></div></div>' +
+    '<div class="card-body">' + bodyHtml + '</div></div>';
+}
+
+/**
+ * Barras horizontales. `mode === 'ordinal'` tiñe cada barra con un paso de la
+ * rampa de un solo tono (orden creciente); si no, todas comparten el tono base.
+ */
+function barChart(rows, mode) {
+  const total = rows.reduce((s, r) => s + (Number(r.value) || 0), 0);
+  if (!total) return UI.empty('&#9633;', 'Sin datos todavía', 'Crea tareas para ver la distribución.');
+  const max = rows.reduce((m, r) => Math.max(m, Number(r.value) || 0), 0) || 1;
+
+  return '<div class="bars">' + rows.map((r, i) => {
+    const v = Number(r.value) || 0;
+    const pct = Math.round(v / total * 100);
+    const width = Math.max(1, Math.round(v / max * 100));
+    const ordClass = mode === 'ordinal' ? ' ord-' + Math.min(4, i + 1) : '';
+    return '<div class="bar-row' + ordClass + '" title="' +
+        UI.esc(r.label + ': ' + v + ' tarea' + (v === 1 ? '' : 's') + ' · ' + pct + '% del total') + '">' +
+      '<span class="b-label">' + UI.esc(r.label) + '</span>' +
+      '<span class="bar-track"><span class="bar-fill" style="width:' + width + '%"></span></span>' +
+      '<span class="b-value">' + v + '</span>' +
+    '</div>';
+  }).join('') + '</div>';
+}
+
+function progressChart(rows) {
+  if (!rows || !rows.length) {
+    return UI.empty('&#9633;', 'Sin proyectos con tareas', 'El avance aparece al crear tareas.');
+  }
+  return '<div class="bars">' + rows.map(p =>
+    '<div class="bar-row" data-open-project="' + UI.esc(p.projectId) + '" ' +
+        'style="cursor:pointer" title="' +
+        UI.esc(p.nombre + ': ' + p.avance + '% de avance · ' + p.total +
+          ' tarea' + (p.total === 1 ? '' : 's') +
+          (p.enRiesgo ? ' · en riesgo' : '')) + '">' +
+      '<span class="b-label">' + UI.esc(p.nombre) +
+        (p.enRiesgo ? ' <span aria-hidden="true" style="color:var(--critical)">&#9888;</span>' : '') +
+      '</span>' +
+      '<span class="bar-track"><span class="bar-fill" style="width:' +
+        Math.max(1, p.avance) + '%"></span></span>' +
+      '<span class="b-value">' + p.avance + '%</span>' +
+    '</div>').join('') + '</div>';
+}
+
+function riskCard(rows) {
+  let body;
+  if (!rows || !rows.length) {
+    body = UI.empty('&#10003;', 'Ningún proyecto en riesgo',
+      'Se marcan los proyectos con tareas vencidas, plazo excedido o avance bajo.');
+  } else {
+    body = '<table class="data"><thead><tr><th>Proyecto</th><th>Plazo</th>' +
+      '<th class="num">Vencidas</th><th class="num">Avance</th></tr></thead><tbody>' +
+      rows.map(p =>
+        '<tr style="cursor:pointer" data-open-project="' + UI.esc(p.projectId) + '">' +
+        '<td><strong>' + UI.esc(p.nombre) + '</strong></td>' +
+        '<td>' + (p.fechaFin ? UI.esc(UI.fmtDate(p.fechaFin)) : '—') + '</td>' +
+        '<td class="num">' + (p.vencidas
+          ? '<span class="badge-risk"><span aria-hidden="true">&#9888;</span>' + p.vencidas + '</span>'
+          : '0') + '</td>' +
+        '<td class="num">' + p.avance + '%</td></tr>').join('') +
+      '</tbody></table>';
+  }
+  return '<div class="card">' +
+    '<div class="card-head"><div><h2>Proyectos en riesgo</h2>' +
+    '<div class="sub">Tareas vencidas, plazo excedido o avance bajo el umbral</div></div></div>' +
+    (rows && rows.length ? body : '<div class="card-body">' + body + '</div>') +
+  '</div>';
+}
+</script>

@@ -1,0 +1,568 @@
+<script>
+/* ==========================================================================
+   App.html — Núcleo del frontend: RPC, estado, router, utilidades de UI.
+
+   Reglas:
+     · Todo texto proveniente de datos pasa por UI.esc() antes de inyectarse.
+       No se escribe innerHTML con datos crudos en ningún punto de la app.
+     · El frontend nunca envía el email del usuario: el backend lo resuelve.
+     · Ocultar un botón según el rol es cosmética; el permiso se revalida en
+       el backend en cada llamada.
+   ========================================================================== */
+
+/* ───────────────────────────── Utilidades UI ───────────────────────────── */
+
+const UI = (function () {
+
+  const MONTHS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+
+  /** Escape HTML. Única puerta de entrada de datos a la plantilla. */
+  function esc(value) {
+    if (value === null || value === undefined) return '';
+    return String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  /** 'YYYY-MM-DD' → '05/10/2026'. Sin objetos Date: cero deriva de zona. */
+  function fmtDate(iso) {
+    if (!iso) return '';
+    const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!m) return String(iso);
+    return m[3] + '/' + m[2] + '/' + m[1];
+  }
+
+  /** 'YYYY-MM-DD' → '5 oct'. */
+  function fmtDateShort(iso) {
+    if (!iso) return '';
+    const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!m) return String(iso);
+    return Number(m[3]) + ' ' + MONTHS[Number(m[2]) - 1];
+  }
+
+  /** ISO UTC → fecha y hora en la zona del navegador. */
+  function fmtDateTime(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return String(iso);
+    const p = n => String(n).padStart(2, '0');
+    return p(d.getDate()) + '/' + p(d.getMonth() + 1) + '/' + d.getFullYear() +
+      ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+
+  function fmtRelative(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    const diff = Math.round((Date.now() - d.getTime()) / 1000);
+    if (diff < 60) return 'hace instantes';
+    if (diff < 3600) return 'hace ' + Math.floor(diff / 60) + ' min';
+    if (diff < 86400) return 'hace ' + Math.floor(diff / 3600) + ' h';
+    if (diff < 2592000) return 'hace ' + Math.floor(diff / 86400) + ' d';
+    return fmtDate(iso.slice(0, 10));
+  }
+
+  function initials(name, email) {
+    const src = String(name || email || '?').trim();
+    const parts = src.split(/[\s.@_-]+/).filter(Boolean);
+    if (!parts.length) return '?';
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return (parts[0][0] + parts[1][0]).toUpperCase();
+  }
+
+  const PRIO_LABEL = { BAJA: 'Baja', MEDIA: 'Media', ALTA: 'Alta', CRITICA: 'Crítica' };
+
+  /** Chip de prioridad: punto de color + etiqueta siempre visible. */
+  function prioChip(prioridad) {
+    const p = prioridad || 'MEDIA';
+    return '<span class="chip prio-' + esc(p) + '"><i class="dot"></i>' +
+      esc(PRIO_LABEL[p] || p) + '</span>';
+  }
+
+  const DUE_TEXT = {
+    OVERDUE: { ico: '&#9888;', label: 'Vencida' },
+    DUE_SOON: { ico: '&#9201;', label: 'Por vencer' },
+    NORMAL: { ico: '&#128197;', label: '' },
+    DONE: { ico: '&#10003;', label: 'Completada' },
+    NONE: { ico: '', label: 'Sin fecha' }
+  };
+
+  /** Indicador de vencimiento: icono + texto. El color nunca va solo. */
+  function dueBadge(task) {
+    const st = task.dueState || 'NONE';
+    const cfgBadge = DUE_TEXT[st] || DUE_TEXT.NONE;
+    let text;
+    if (st === 'NONE') text = 'Sin fecha';
+    else if (st === 'DONE') text = 'Completada';
+    else if (st === 'OVERDUE') text = 'Vencida ' + fmtDateShort(task.fechaVencimiento);
+    else if (st === 'DUE_SOON') {
+      const d = task.diasRestantes;
+      text = (d === 0 ? 'Vence hoy' : (d === 1 ? 'Vence mañana' : 'Vence en ' + d + ' días'));
+    } else text = fmtDateShort(task.fechaVencimiento);
+    return '<span class="due due-' + esc(st) + '">' +
+      (cfgBadge.ico ? '<span aria-hidden="true">' + cfgBadge.ico + '</span>' : '') +
+      '<span>' + esc(text) + '</span></span>';
+  }
+
+  function meter(pct) {
+    const v = Math.max(0, Math.min(100, Number(pct) || 0));
+    return '<div class="meter-row"><div class="meter" role="img" aria-label="Avance ' + v + '%">' +
+      '<i style="width:' + v + '%"></i></div><span class="meter-val">' + v + '%</span></div>';
+  }
+
+  function avatarXs(name, email) {
+    return '<span class="avatar-xs" title="' + esc(name || email) + '">' +
+      esc(initials(name, email)) + '</span>';
+  }
+
+  function empty(icon, title, hint) {
+    return '<div class="empty"><div class="big" aria-hidden="true">' + icon + '</div>' +
+      '<p><strong>' + esc(title) + '</strong></p>' +
+      (hint ? '<p>' + esc(hint) + '</p>' : '') + '</div>';
+  }
+
+  function skeleton(rows) {
+    let h = '';
+    for (let i = 0; i < (rows || 3); i++) {
+      h += '<div class="skeleton" style="height:56px;margin-bottom:10px"></div>';
+    }
+    return h;
+  }
+
+  /* ─────────────────────────── Toasts ─────────────────────────── */
+
+  function toast(message, type) {
+    const host = document.getElementById('toasts');
+    const el = document.createElement('div');
+    const kind = type || 'ok';
+    el.className = 'toast ' + kind;
+    const ico = kind === 'ok' ? '&#10003;' : (kind === 'err' ? '&#9888;' : '&#9432;');
+    el.innerHTML = '<span class="t-ico" aria-hidden="true">' + ico + '</span><span></span>';
+    el.lastChild.textContent = message;
+    host.appendChild(el);
+    const ttl = kind === 'err' ? 6500 : 3200;
+    setTimeout(() => {
+      el.classList.add('leaving');
+      setTimeout(() => el.remove(), 250);
+    }, ttl);
+  }
+
+  /* ─────────────────────────── Modales ────────────────────────── */
+
+  let modalStack = [];
+
+  /**
+   * Abre un modal. `opts`: { title, subtitle, body (HTML), footer (HTML),
+   * size: 'lg', onMount(root), onClose() }
+   */
+  function openModal(opts) {
+    const o = opts || {};
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML =
+      '<div class="modal' + (o.size === 'lg' ? ' modal-lg' : '') + '" role="dialog" aria-modal="true">' +
+        '<div class="modal-head">' +
+          '<div><h2>' + esc(o.title || '') + '</h2>' +
+          (o.subtitle ? '<div class="sub">' + esc(o.subtitle) + '</div>' : '') + '</div>' +
+          '<button class="modal-close" aria-label="Cerrar">&times;</button>' +
+        '</div>' +
+        '<div class="modal-body"></div>' +
+        (o.footer ? '<div class="modal-foot"></div>' : '') +
+      '</div>';
+
+    const body = overlay.querySelector('.modal-body');
+    body.innerHTML = o.body || '';
+    if (o.footer) overlay.querySelector('.modal-foot').innerHTML = o.footer;
+    if (o.nopad) body.classList.add('no-pad');
+
+    overlay.querySelector('.modal-close').addEventListener('click', () => closeModal(overlay));
+    overlay.addEventListener('mousedown', e => { if (e.target === overlay) closeModal(overlay); });
+
+    document.getElementById('modal-root').appendChild(overlay);
+    modalStack.push({ el: overlay, onClose: o.onClose });
+    document.body.style.overflow = 'hidden';
+    if (o.onMount) o.onMount(overlay);
+    const first = overlay.querySelector('input,textarea,select,button.btn-primary');
+    if (first) setTimeout(() => first.focus(), 40);
+    return overlay;
+  }
+
+  function closeModal(el) {
+    const target = el || (modalStack.length ? modalStack[modalStack.length - 1].el : null);
+    if (!target) return;
+    const idx = modalStack.findIndex(m => m.el === target);
+    if (idx !== -1) {
+      const entry = modalStack[idx];
+      modalStack.splice(idx, 1);
+      if (entry.onClose) { try { entry.onClose(); } catch (e) { /* noop */ } }
+    }
+    target.remove();
+    if (!modalStack.length) document.body.style.overflow = '';
+  }
+
+  function closeAllModals() {
+    while (modalStack.length) closeModal(modalStack[modalStack.length - 1].el);
+  }
+
+  function modalError(overlay, message) {
+    const body = overlay.querySelector('.modal-body') || overlay.querySelector('.modal');
+    let box = overlay.querySelector('.form-error');
+    if (!box) {
+      box = document.createElement('div');
+      box.className = 'form-error';
+      body.insertBefore(box, body.firstChild);
+    }
+    box.textContent = message;
+    if (typeof box.scrollIntoView === 'function') box.scrollIntoView({ block: 'nearest' });
+  }
+
+  function clearModalError(overlay) {
+    const box = overlay.querySelector('.form-error');
+    if (box) box.remove();
+  }
+
+  /** Confirmación simple. Devuelve una promesa booleana. */
+  function confirmDialog(title, message, confirmLabel, danger) {
+    return new Promise(resolve => {
+      let settled = false;
+      const overlay = openModal({
+        title: title,
+        body: '<p style="margin:0;color:var(--ink-2)"></p>',
+        footer:
+          '<button class="btn" data-act="no">Cancelar</button>' +
+          '<button class="btn ' + (danger ? 'btn-danger' : 'btn-primary') + '" data-act="yes">' +
+          esc(confirmLabel || 'Confirmar') + '</button>',
+        onMount: root => {
+          root.querySelector('.modal-body p').textContent = message;
+          root.querySelector('[data-act="no"]').addEventListener('click', () => {
+            settled = true; closeModal(overlay); resolve(false);
+          });
+          root.querySelector('[data-act="yes"]').addEventListener('click', () => {
+            settled = true; closeModal(overlay); resolve(true);
+          });
+        },
+        onClose: () => { if (!settled) resolve(false); }
+      });
+    });
+  }
+
+  /** Lee un formulario en un objeto plano por atributo name. */
+  function readForm(root) {
+    const out = {};
+    root.querySelectorAll('[name]').forEach(el => {
+      if (el.type === 'checkbox') out[el.name] = el.checked;
+      else out[el.name] = el.value;
+    });
+    return out;
+  }
+
+  /** Marca un botón como ocupado y devuelve la función para restaurarlo. */
+  function busy(btn, label) {
+    if (!btn) return function () {};
+    const original = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="inline-spinner" aria-hidden="true"></span> ' + esc(label || 'Guardando…');
+    return function () { btn.disabled = false; btn.innerHTML = original; };
+  }
+
+  function optionList(values, selected, labels) {
+    return values.map(v => '<option value="' + esc(v) + '"' +
+      (String(v) === String(selected) ? ' selected' : '') + '>' +
+      esc(labels && labels[v] ? labels[v] : v) + '</option>').join('');
+  }
+
+  return {
+    esc, fmtDate, fmtDateShort, fmtDateTime, fmtRelative, initials,
+    prioChip, dueBadge, meter, avatarXs, empty, skeleton,
+    toast, openModal, closeModal, closeAllModals, modalError, clearModalError,
+    confirmDialog, readForm, busy, optionList, PRIO_LABEL
+  };
+})();
+
+/* ────────────────────────────── Aplicación ─────────────────────────────── */
+
+const App = (function () {
+
+  const state = {
+    user: null,
+    meta: null,
+    projects: [],
+    assignables: [],
+    route: 'dashboard',
+    params: {},
+    currentProjectId: null,
+    boardFilters: {}
+  };
+
+  const views = {};
+  let started = false;
+
+  /* ─────────────────────── Puente con el backend ────────────────────── */
+
+  /**
+   * Llama una función del backend y resuelve con `data`.
+   * Rechaza con un Error que incluye `.code` (el errorCode del contrato).
+   */
+  function rpc(fnName, ...args) {
+    return new Promise((resolve, reject) => {
+      const runner = google.script.run
+        .withSuccessHandler(res => {
+          if (!res || typeof res !== 'object') {
+            return reject(new Error('El servidor devolvió una respuesta vacía.'));
+          }
+          if (res.success) return resolve(res.data);
+          const err = new Error(res.message || 'Error desconocido.');
+          err.code = res.errorCode;
+          reject(err);
+        })
+        .withFailureHandler(e => {
+          const err = new Error(
+            (e && e.message) ? e.message :
+            'No se pudo contactar el servidor. Revisa tu conexión y reintenta.');
+          err.code = 'TRANSPORT';
+          reject(err);
+        });
+
+      if (typeof runner[fnName] !== 'function') {
+        return reject(new Error('Función no disponible: ' + fnName));
+      }
+      runner[fnName].apply(runner, args);
+    });
+  }
+
+  /** Muestra el error de forma legible y lo devuelve para encadenar. */
+  function handleError(err) {
+    const code = err && err.code;
+    if (code === 'UNAUTHORIZED' || code === 'USER_INACTIVE' || code === 'IDENTITY_UNAVAILABLE') {
+      showDenied(err.message, code);
+      return;
+    }
+    UI.toast((err && err.message) || 'Ocurrió un error.', 'err');
+  }
+
+  /* ────────────────────────────── Arranque ──────────────────────────── */
+
+  function start() {
+    if (started) return;
+    started = true;
+    applyStoredTheme();
+
+    rpc('getBootstrap')
+      .then(boot => {
+        state.user = boot.user;
+        state.projects = boot.projects || [];
+        state.assignables = boot.assignables || [];
+        state.meta = boot.meta || {};
+        document.getElementById('boot').classList.add('hidden');
+        document.getElementById('app').classList.remove('hidden');
+        renderIdentity();
+        renderNav();
+        bindShell();
+        go('dashboard');
+      })
+      .catch(err => {
+        document.getElementById('boot').classList.add('hidden');
+        if (err && (err.code === 'UNAUTHORIZED' || err.code === 'USER_INACTIVE' ||
+                    err.code === 'IDENTITY_UNAVAILABLE' || err.code === 'NOT_CONFIGURED')) {
+          showDenied(err.message, err.code);
+        } else {
+          showDenied((err && err.message) || 'No se pudo iniciar la aplicación.', 'INTERNAL');
+        }
+      });
+  }
+
+  function showDenied(message, code) {
+    document.getElementById('boot').classList.add('hidden');
+    document.getElementById('app').classList.add('hidden');
+    const box = document.getElementById('denied');
+    box.classList.remove('hidden');
+    document.getElementById('denied-title').textContent =
+      code === 'NOT_CONFIGURED' ? 'Aplicación no inicializada' : 'Acceso restringido';
+    document.getElementById('denied-msg').textContent = message || '';
+    document.getElementById('denied-email').textContent = '';
+  }
+
+  function renderIdentity() {
+    document.getElementById('who-avatar').textContent = UI.initials(state.user.nombre, state.user.email);
+    document.getElementById('who-name').textContent = state.user.nombre || state.user.email;
+    document.getElementById('who-role').textContent =
+      (state.user.rol === 'ADMIN' ? 'Administrador' : 'Usuario') + ' · ' + state.user.email;
+  }
+
+  /* ─────────────────────────────── Router ───────────────────────────── */
+
+  function registerView(name, def) { views[name] = def; }
+
+  function go(route, params) {
+    const def = views[route];
+    if (!def) { UI.toast('Vista no encontrada: ' + route, 'err'); return; }
+    if (def.adminOnly && !state.user.isAdmin) { UI.toast('Sección solo para administradores.', 'err'); return; }
+
+    state.route = route;
+    state.params = params || {};
+    UI.closeAllModals();
+    closeSidebar();
+
+    document.querySelectorAll('.nav-item[data-route]').forEach(b => {
+      b.classList.toggle('active', b.getAttribute('data-route') === route);
+    });
+
+    const view = document.getElementById('view');
+    view.innerHTML = UI.skeleton(3);
+    setHeader(typeof def.title === 'function' ? def.title(state.params) : def.title, '', '');
+
+    Promise.resolve()
+      .then(() => def.render(view, state.params))
+      .catch(handleError);
+  }
+
+  function setHeader(title, subtitle, actionsHtml) {
+    document.getElementById('page-title').textContent = title || '';
+    document.getElementById('page-sub').textContent = subtitle || '';
+    document.getElementById('page-actions').innerHTML = actionsHtml || '';
+  }
+
+  function refresh() { go(state.route, state.params); }
+
+  /* ────────────────────────────── Navegación ────────────────────────── */
+
+  function renderNav() {
+    const items = [
+      { route: 'dashboard', ico: '&#9632;', label: 'Dashboard' },
+      { route: 'projects', ico: '&#128193;', label: 'Proyectos' },
+      { route: 'kanban', ico: '&#9783;', label: 'Kanban' },
+      { route: 'mytasks', ico: '&#10003;', label: 'Mis tareas' }
+    ];
+    const admin = [
+      { route: 'admin-users', ico: '&#128100;', label: 'Usuarios' },
+      { route: 'admin-audit', ico: '&#128220;', label: 'Auditoría' },
+      { route: 'admin-config', ico: '&#9881;', label: 'Configuración' }
+    ];
+
+    let html = items.map(navButton).join('');
+    if (state.user.isAdmin) {
+      html += '<div class="nav-label">Administración</div>' + admin.map(navButton).join('');
+    }
+    html += '<div class="nav-label">Cuenta</div>' +
+      navButton({ route: 'profile', ico: '&#9786;', label: 'Mi perfil' });
+
+    const nav = document.getElementById('nav');
+    nav.innerHTML = html;
+    nav.querySelectorAll('.nav-item[data-route]').forEach(btn => {
+      btn.addEventListener('click', () => go(btn.getAttribute('data-route')));
+    });
+  }
+
+  function navButton(item) {
+    return '<button class="nav-item" data-route="' + UI.esc(item.route) + '">' +
+      '<span class="ico" aria-hidden="true">' + item.ico + '</span>' +
+      '<span>' + UI.esc(item.label) + '</span></button>';
+  }
+
+  function bindShell() {
+    document.getElementById('btn-menu').addEventListener('click', toggleSidebar);
+    document.getElementById('btn-theme').addEventListener('click', toggleTheme);
+
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') UI.closeModal();
+      // Atajos: sin modal abierto y fuera de campos de texto.
+      const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.target && e.target.tagName) || '');
+      if (typing || document.querySelector('.overlay')) return;
+      if (e.key === 'd') go('dashboard');
+      if (e.key === 'p') go('projects');
+      if (e.key === 'k') go('kanban');
+      if (e.key === 'm') go('mytasks');
+    });
+  }
+
+  function toggleSidebar() { document.getElementById('sidebar').classList.toggle('open'); }
+  function closeSidebar() { document.getElementById('sidebar').classList.remove('open'); }
+
+  /* ──────────────────────────────── Tema ───────────────────────────── */
+
+  function applyStoredTheme() {
+    let pref = null;
+    try { pref = window.localStorage ? localStorage.getItem('kw-theme') : null; } catch (e) { pref = null; }
+    if (pref === 'dark' || pref === 'light') document.documentElement.setAttribute('data-theme', pref);
+  }
+
+  function toggleTheme() {
+    const curr = document.documentElement.getAttribute('data-theme');
+    const isDark = curr === 'dark' ||
+      (!curr && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    const next = isDark ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    try { if (window.localStorage) localStorage.setItem('kw-theme', next); } catch (e) { /* noop */ }
+  }
+
+  /* ──────────────────────── Caché ligera de datos ───────────────────── */
+
+  function reloadProjects() {
+    return rpc('getProjects', {}).then(list => { state.projects = list || []; return state.projects; });
+  }
+
+  function projectById(id) {
+    return state.projects.filter(p => p.projectId === id)[0] || null;
+  }
+
+  function can(permission) {
+    const perms = (state.user && state.user.permissions) || [];
+    if (perms.indexOf('*') !== -1) return true;
+    if (perms.indexOf(permission) !== -1) return true;
+    const parts = permission.split('.');
+    for (let i = parts.length - 1; i > 0; i--) {
+      if (perms.indexOf(parts.slice(0, i).join('.') + '.*') !== -1) return true;
+    }
+    return false;
+  }
+
+  /** <select> de responsables, con la opción "sin asignar". */
+  function assigneeOptions(selected) {
+    let html = '<option value="">— Sin asignar —</option>';
+    state.assignables.forEach(u => {
+      html += '<option value="' + UI.esc(u.email) + '"' +
+        (u.email === selected ? ' selected' : '') + '>' +
+        UI.esc(u.nombre) + ' (' + UI.esc(u.email) + ')</option>';
+    });
+    return html;
+  }
+
+  function statusOptions(selected) {
+    const list = (state.meta.statuses || []);
+    return list.map(s => '<option value="' + UI.esc(s.value) + '"' +
+      (s.value === selected ? ' selected' : '') + '>' + UI.esc(s.label) + '</option>').join('');
+  }
+
+  function priorityOptions(selected) {
+    return (state.meta.priorities || []).map(p => '<option value="' + UI.esc(p) + '"' +
+      (p === selected ? ' selected' : '') + '>' + UI.esc(UI.PRIO_LABEL[p] || p) + '</option>').join('');
+  }
+
+  function statusLabel(value) {
+    const found = (state.meta.statuses || []).filter(s => s.value === value)[0];
+    return found ? found.label : value;
+  }
+
+  /** Descarga un CSV generado en el backend, sin pasar por Drive. */
+  function downloadCsv(projectId) {
+    return rpc('exportTasksCsv', projectId || null).then(res => {
+      const blob = new Blob([res.content], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = res.filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
+      UI.toast('Exportadas ' + res.rows + ' tareas.', 'ok');
+    }).catch(handleError);
+  }
+
+  return {
+    state, start, go, refresh, rpc, handleError, setHeader, registerView,
+    reloadProjects, projectById, can, assigneeOptions, statusOptions,
+    priorityOptions, statusLabel, downloadCsv, renderNav
+  };
+})();
+</script>

@@ -1,0 +1,316 @@
+<script>
+/* ==========================================================================
+   ViewKanban.html — Tablero Kanban con Drag & Drop (SortableJS).
+
+   El movimiento se persiste inmediatamente: la tarjeta queda en estado
+   "guardando" hasta que el backend confirma. Si falla, el tablero se vuelve a
+   dibujar desde el servidor, de modo que la UI nunca queda mostrando un
+   estado que no está en Google Sheets.
+   ========================================================================== */
+
+var Kanban = {
+  sortables: [],
+  board: null
+};
+
+App.registerView('kanban', {
+  title: 'Kanban',
+
+  render: function (view, params) {
+    const projects = App.state.projects.filter(p => p.activo);
+    if (!projects.length) {
+      App.setHeader('Kanban', 'Aún no hay proyectos disponibles', '');
+      view.innerHTML = UI.empty('&#9783;', 'No hay proyectos activos',
+        'Crea un proyecto para empezar a usar el tablero.');
+      return;
+    }
+
+    const pid = params.projectId || App.state.currentProjectId || projects[0].projectId;
+    App.state.currentProjectId = projects.some(p => p.projectId === pid) ? pid : projects[0].projectId;
+
+    const f = App.state.boardFilters || (App.state.boardFilters = {});
+
+    setBoardHeader('');
+
+    view.innerHTML = boardFiltersHtml(f) +
+      '<div id="kb-summary" style="margin-bottom:14px"></div>' +
+      '<div class="board-wrap"><div class="board" id="kb-board">' + UI.skeleton(1) + '</div></div>';
+
+    bindBoardFilters(f);
+    return loadBoard();
+  }
+});
+
+/**
+ * Cabecera del tablero. Se vuelve a pintar al cargar datos (para actualizar el
+ * subtítulo), por lo que los listeners se enlazan aquí, no en render().
+ */
+function setBoardHeader(subtitle) {
+  const projects = App.state.projects.filter(p => p.activo);
+  App.setHeader('Kanban', subtitle,
+    '<select id="kb-project" aria-label="Proyecto" style="min-width:210px">' +
+      projects.map(p => '<option value="' + UI.esc(p.projectId) + '"' +
+        (p.projectId === App.state.currentProjectId ? ' selected' : '') + '>' +
+        UI.esc(p.nombre) + '</option>').join('') +
+    '</select>' +
+    '<button class="btn btn-primary" id="kb-new">+ Nueva tarea</button>' +
+    '<button class="btn" id="kb-export">&#8681; CSV</button>' +
+    '<button class="btn btn-ghost btn-icon" id="kb-refresh" title="Actualizar">&#8635;</button>');
+
+  document.getElementById('kb-project').addEventListener('change', e => {
+    App.go('kanban', { projectId: e.target.value });
+  });
+  document.getElementById('kb-new').addEventListener('click', () => {
+    openTaskModal(null, App.state.currentProjectId, 'BACKLOG');
+  });
+  document.getElementById('kb-export').addEventListener('click', () => {
+    App.downloadCsv(App.state.currentProjectId);
+  });
+  document.getElementById('kb-refresh').addEventListener('click', () => App.refresh());
+}
+
+function boardFiltersHtml(f) {
+  return '<div class="filters">' +
+    '<div class="f f-search"><span>Buscar</span>' +
+      '<input type="search" id="kf-texto" placeholder="Título, descripción o ID" value="' +
+        UI.esc(f.texto || '') + '"></div>' +
+    '<div class="f"><span>Responsable</span><select id="kf-resp">' +
+      '<option value="">Todos</option>' +
+      App.state.assignables.map(u => '<option value="' + UI.esc(u.email) + '"' +
+        (f.responsable === u.email ? ' selected' : '') + '>' + UI.esc(u.nombre) + '</option>').join('') +
+      '</select></div>' +
+    '<div class="f"><span>Prioridad</span><select id="kf-prio">' +
+      '<option value="">Todas</option>' + App.priorityOptions(f.prioridad || '') + '</select></div>' +
+    '<div class="f"><span>Vence desde</span><input type="date" id="kf-desde" value="' +
+      UI.esc(f.desde || '') + '"></div>' +
+    '<div class="f"><span>Vence hasta</span><input type="date" id="kf-hasta" value="' +
+      UI.esc(f.hasta || '') + '"></div>' +
+    '<label class="inline-check" style="margin-bottom:2px"><input type="checkbox" id="kf-mias"' +
+      (f.misTareas ? ' checked' : '') + '> Mis tareas</label>' +
+    '<label class="inline-check" style="margin-bottom:2px"><input type="checkbox" id="kf-venc"' +
+      (f.soloVencidas ? ' checked' : '') + '> Solo vencidas</label>' +
+    '<button class="btn btn-ghost btn-sm" id="kf-clear">Limpiar</button>' +
+  '</div>';
+}
+
+function bindBoardFilters(f) {
+  const apply = () => {
+    f.texto = document.getElementById('kf-texto').value;
+    f.responsable = document.getElementById('kf-resp').value;
+    f.prioridad = document.getElementById('kf-prio').value;
+    f.desde = document.getElementById('kf-desde').value;
+    f.hasta = document.getElementById('kf-hasta').value;
+    f.misTareas = document.getElementById('kf-mias').checked;
+    f.soloVencidas = document.getElementById('kf-venc').checked;
+    loadBoard();
+  };
+  let timer = null;
+  document.getElementById('kf-texto').addEventListener('input', () => {
+    clearTimeout(timer); timer = setTimeout(apply, 280);
+  });
+  ['kf-resp', 'kf-prio', 'kf-desde', 'kf-hasta', 'kf-mias', 'kf-venc']
+    .forEach(id => document.getElementById(id).addEventListener('change', apply));
+  document.getElementById('kf-clear').addEventListener('click', () => {
+    App.state.boardFilters = {};
+    App.refresh();
+  });
+}
+
+/* ───────────────────────────── Carga y pintado ─────────────────────────── */
+
+function loadBoard() {
+  const host = document.getElementById('kb-board');
+  return App.rpc('getBoard', App.state.currentProjectId, App.state.boardFilters)
+    .then(board => {
+      Kanban.board = board;
+      renderBoardSummary(board.project);
+      host.innerHTML = board.columns.map(columnHtml).join('');
+      wireBoard();
+      const hasFilters = Object.keys(App.state.boardFilters || {})
+        .some(k => App.state.boardFilters[k]);
+      setBoardHeader(
+        board.project.nombre + ' · ' + board.total + ' tarea' + (board.total === 1 ? '' : 's') +
+        (hasFilters ? ' (filtradas)' : ''));
+    })
+    .catch(err => {
+      host.innerHTML = UI.empty('&#9888;', 'No se pudo cargar el tablero', err.message);
+      App.handleError(err);
+    });
+}
+
+function renderBoardSummary(p) {
+  document.getElementById('kb-summary').innerHTML =
+    '<div class="card"><div class="card-body" style="display:flex;gap:18px;align-items:center;flex-wrap:wrap">' +
+      '<div style="min-width:170px"><div class="k-label" style="font-size:10.5px;font-weight:650;' +
+        'text-transform:uppercase;letter-spacing:.06em;color:var(--ink-muted)">Avance del proyecto</div>' +
+        UI.meter(p.avanceCalculado) + '</div>' +
+      '<div class="proj-meta">' +
+        '<span class="chip">' + UI.esc(App.statusLabel(p.estado)) + '</span>' +
+        UI.prioChip(p.prioridad) +
+        (p.enRiesgo ? '<span class="badge-risk"><span aria-hidden="true">&#9888;</span>En riesgo</span>' : '') +
+      '</div>' +
+      '<div style="font-size:12.5px;color:var(--ink-muted)">' +
+        UI.esc((p.responsable || 'Sin responsable') + ' · ' +
+          (p.fechaFin ? 'objetivo ' + UI.fmtDate(p.fechaFin) : 'sin plazo')) +
+      '</div>' +
+      '<div style="margin-left:auto;font-size:12.5px;color:var(--ink-muted)">' +
+        p.tareasCompletadas + ' de ' + p.totalTareas + ' completadas' +
+        (p.tareasVencidas
+          ? ' · <span style="color:var(--critical);font-weight:600">' +
+            '<span aria-hidden="true">&#9888;</span> ' + p.tareasVencidas + ' vencidas</span>'
+          : '') +
+      '</div>' +
+    '</div></div>';
+}
+
+function columnHtml(col) {
+  return '<section class="col" data-col="' + UI.esc(col.estado) + '">' +
+    '<header class="col-head">' +
+      '<span class="col-title">' + UI.esc(col.label) + '</span>' +
+      '<span class="col-count" data-count="' + UI.esc(col.estado) + '">' + col.tasks.length + '</span>' +
+      '<button class="btn btn-ghost btn-sm col-add" data-add="' + UI.esc(col.estado) + '" ' +
+        'title="Nueva tarea en ' + UI.esc(col.label) + '" aria-label="Nueva tarea en ' +
+        UI.esc(col.label) + '">+</button>' +
+    '</header>' +
+    '<div class="col-body" data-estado="' + UI.esc(col.estado) + '">' +
+      col.tasks.map(taskCardHtml).join('') +
+      '<div class="col-empty"' + (col.tasks.length ? ' style="display:none"' : '') + '>Sin tareas</div>' +
+    '</div>' +
+  '</section>';
+}
+
+function taskCardHtml(t) {
+  return '<article class="tcard p-' + UI.esc(t.prioridad) + '" data-tid="' + UI.esc(t.taskId) +
+    '" tabindex="0" role="button" aria-label="Abrir tarea ' + UI.esc(t.titulo) + '">' +
+    taskCardInner(t) + '</article>';
+}
+
+function taskCardInner(t) {
+  const subs = t.subtareasTotal
+    ? '<span title="Subtareas completadas"><span aria-hidden="true">&#9745;</span> ' +
+      t.subtareasCompletadas + '/' + t.subtareasTotal + '</span>'
+    : '';
+  const cmts = t.comentarios
+    ? '<span title="Comentarios"><span aria-hidden="true">&#128172;</span> ' + t.comentarios + '</span>'
+    : '';
+  return '<div class="tcard-top">' + UI.prioChip(t.prioridad) + UI.dueBadge(t) + '</div>' +
+    '<div class="tcard-title">' + UI.esc(t.titulo) + '</div>' +
+    UI.meter(t.porcentajeAvance) +
+    '<div class="tcard-foot">' +
+      (t.responsable
+        ? '<span class="who-mini">' + UI.avatarXs(t.responsableNombre, t.responsable) +
+          UI.esc(t.responsableNombre || t.responsable) + '</span>'
+        : '<span class="who-mini" style="opacity:.7">Sin responsable</span>') +
+      subs + cmts +
+    '</div>';
+}
+
+/* ──────────────────────────── Drag & Drop ──────────────────────────────── */
+
+function wireBoard() {
+  const board = document.getElementById('kb-board');
+
+  board.querySelectorAll('[data-add]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      openTaskModal(null, App.state.currentProjectId, btn.getAttribute('data-add'));
+    });
+  });
+
+  board.querySelectorAll('.tcard').forEach(card => {
+    card.addEventListener('click', () => openTaskDetail(card.getAttribute('data-tid')));
+    card.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        openTaskDetail(card.getAttribute('data-tid'));
+      }
+    });
+  });
+
+  Kanban.sortables.forEach(s => { try { s.destroy(); } catch (e) { /* noop */ } });
+  Kanban.sortables = [];
+
+  if (typeof Sortable === 'undefined') {
+    UI.toast('No se pudo cargar la librería de arrastre. Puedes mover tareas desde su detalle.', 'warn');
+    return;
+  }
+
+  board.querySelectorAll('.col-body').forEach(colBody => {
+    Kanban.sortables.push(new Sortable(colBody, {
+      group: 'kanban-board',
+      draggable: '.tcard',
+      animation: 150,
+      ghostClass: 'sortable-ghost',
+      chosenClass: 'sortable-chosen',
+      fallbackOnBody: true,
+      swapThreshold: 0.65,
+      onStart: () => document.body.classList.add('dragging'),
+      onEnd: onCardDropped
+    }));
+  });
+}
+
+function onCardDropped(evt) {
+  document.body.classList.remove('dragging');
+  const card = evt.item;
+  const taskId = card.getAttribute('data-tid');
+  const destino = evt.to.getAttribute('data-estado');
+  const origen = evt.from.getAttribute('data-estado');
+  const index = evt.newDraggableIndex;
+
+  refreshColumnPlaceholders();
+  updateColumnCounts();
+
+  if (destino === origen && index === evt.oldDraggableIndex) return;
+
+  card.classList.add('saving');
+  App.rpc('moveTask', taskId, destino, index)
+    .then(res => {
+      card.classList.remove('saving');
+      card.className = 'tcard p-' + res.task.prioridad;
+      card.innerHTML = taskCardInner(res.task);
+      card.addEventListener('click', () => openTaskDetail(taskId));
+      renderBoardSummary(res.project);
+      updateColumnCounts();
+      if (destino !== origen) {
+        UI.toast('Estado actualizado: ' + App.statusLabel(destino) + '.', 'ok');
+      }
+      // Reordenamientos globales: el backend renormalizó la columna, hay que
+      // recargar para no quedar con órdenes locales inconsistentes.
+      if (res.renormalized) loadBoard();
+    })
+    .catch(err => {
+      card.classList.remove('saving');
+      UI.toast(err.message || 'No se pudo mover la tarea.', 'err');
+      loadBoard();
+    });
+}
+
+function refreshColumnPlaceholders() {
+  document.querySelectorAll('#kb-board .col-body').forEach(body => {
+    const ph = body.querySelector('.col-empty');
+    if (!ph) return;
+    const hasCards = body.querySelectorAll('.tcard').length > 0;
+    ph.style.display = hasCards ? 'none' : '';
+    if (hasCards) body.appendChild(ph);
+  });
+}
+
+function updateColumnCounts() {
+  document.querySelectorAll('#kb-board .col').forEach(col => {
+    const estado = col.getAttribute('data-col');
+    const n = col.querySelectorAll('.tcard').length;
+    const badge = col.querySelector('[data-count="' + estado + '"]');
+    if (badge) badge.textContent = n;
+  });
+}
+
+/**
+ * Recarga la vista de fondo manteniendo filtros, sin navegar: App.go() cerraría
+ * el modal de detalle que está abierto encima.
+ */
+function reloadBoardIfVisible() {
+  if (App.state.route === 'kanban' && document.getElementById('kb-board')) return loadBoard();
+  if (App.state.route === 'mytasks' && document.getElementById('mt-list')) return loadMyTasks();
+  return Promise.resolve();
+}
+</script>

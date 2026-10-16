@@ -1,0 +1,242 @@
+<script>
+/* ==========================================================================
+   ViewProjects.html — Listado, alta, edición y archivado de proyectos.
+   ========================================================================== */
+
+App.registerView('projects', {
+  title: 'Proyectos',
+
+  render: function (view) {
+    const f = App.state.projectFilters || (App.state.projectFilters = {});
+    const canCreate = App.state.meta.canCreateProject;
+
+    App.setHeader('Proyectos', 'Cada proyecto contiene su propio tablero Kanban',
+      (canCreate ? '<button class="btn btn-primary" id="p-new">+ Nuevo proyecto</button>' : '') +
+      '<button class="btn" id="p-export">&#8681; Exportar CSV</button>');
+
+    view.innerHTML = filtersHtml(f) + '<div id="p-list">' + UI.skeleton(2) + '</div>';
+
+    bindProjectFilters(view, f);
+    const nb = document.getElementById('p-new');
+    if (nb) nb.addEventListener('click', () => openProjectModal(null));
+    document.getElementById('p-export').addEventListener('click', () => App.downloadCsv(null));
+
+    return loadProjects(f);
+  }
+});
+
+function filtersHtml(f) {
+  return '<div class="filters">' +
+    '<div class="f f-search"><span>Buscar</span>' +
+      '<input type="search" id="pf-texto" placeholder="Nombre, descripción o responsable" value="' +
+        UI.esc(f.texto || '') + '"></div>' +
+    '<div class="f"><span>Estado</span><select id="pf-estado">' +
+      '<option value="">Todos</option>' + App.statusOptions(f.estado || '') + '</select></div>' +
+    '<div class="f"><span>Prioridad</span><select id="pf-prioridad">' +
+      '<option value="">Todas</option>' + App.priorityOptions(f.prioridad || '') + '</select></div>' +
+    (App.state.user.isAdmin
+      ? '<label class="inline-check" style="margin-bottom:2px"><input type="checkbox" id="pf-inactivos"' +
+        (f.includeInactive ? ' checked' : '') + '> Ver archivados</label>'
+      : '') +
+    '<button class="btn btn-ghost btn-sm" id="pf-clear">Limpiar</button>' +
+  '</div>';
+}
+
+function bindProjectFilters(view, f) {
+  const apply = () => {
+    f.texto = document.getElementById('pf-texto').value;
+    f.estado = document.getElementById('pf-estado').value;
+    f.prioridad = document.getElementById('pf-prioridad').value;
+    const chk = document.getElementById('pf-inactivos');
+    f.includeInactive = chk ? chk.checked : false;
+    loadProjects(f);
+  };
+  let timer = null;
+  document.getElementById('pf-texto').addEventListener('input', () => {
+    clearTimeout(timer); timer = setTimeout(apply, 280);
+  });
+  ['pf-estado', 'pf-prioridad', 'pf-inactivos'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', apply);
+  });
+  document.getElementById('pf-clear').addEventListener('click', () => {
+    App.state.projectFilters = {};
+    App.refresh();
+  });
+}
+
+function loadProjects(filters) {
+  const host = document.getElementById('p-list');
+  return App.rpc('getProjects', filters).then(list => {
+    App.state.projects = list;
+    if (!list.length) {
+      host.innerHTML = UI.empty('&#128193;', 'No hay proyectos que coincidan',
+        App.state.meta.canCreateProject
+          ? 'Crea el primero con el botón "Nuevo proyecto".'
+          : 'Pide a un administrador que te dé acceso a un proyecto.');
+      return;
+    }
+    host.innerHTML = '<div class="proj-grid">' + list.map(projectCard).join('') + '</div>';
+
+    host.querySelectorAll('[data-pid]').forEach(card => {
+      const pid = card.getAttribute('data-pid');
+      card.addEventListener('click', e => {
+        if (e.target.closest('button')) return;
+        App.go('kanban', { projectId: pid });
+      });
+    });
+    host.querySelectorAll('[data-act]').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const act = btn.getAttribute('data-act');
+        const pid = btn.getAttribute('data-pid');
+        if (act === 'edit') openProjectModal(App.projectById(pid));
+        if (act === 'archive') archiveProject(pid, filters);
+        if (act === 'restore') restoreProject(pid, filters);
+        if (act === 'board') App.go('kanban', { projectId: pid });
+      });
+    });
+  }).catch(err => {
+    host.innerHTML = UI.empty('&#9888;', 'No se pudieron cargar los proyectos', err.message);
+    App.handleError(err);
+  });
+}
+
+function projectCard(p) {
+  const admin = App.state.user.isAdmin;
+  return '<article class="proj-card' + (p.activo ? '' : ' row-inactive') + '" data-pid="' +
+      UI.esc(p.projectId) + '" tabindex="0">' +
+    '<div>' +
+      '<div class="proj-meta" style="margin-bottom:6px">' +
+        '<span class="chip">' + UI.esc(App.statusLabel(p.estado)) + '</span>' +
+        UI.prioChip(p.prioridad) +
+        (p.enRiesgo ? '<span class="badge-risk"><span aria-hidden="true">&#9888;</span>En riesgo</span>' : '') +
+        (p.activo ? '' : '<span class="chip">Archivado</span>') +
+      '</div>' +
+      '<h3>' + UI.esc(p.nombre) + '</h3>' +
+      (p.descripcion ? '<p class="desc">' + UI.esc(p.descripcion) + '</p>' : '') +
+    '</div>' +
+
+    '<div style="font-size:12px;color:var(--ink-muted)">' +
+      (p.responsable
+        ? UI.avatarXs(p.responsable, p.responsable) + ' ' + UI.esc(p.responsable)
+        : 'Sin responsable') +
+    '</div>' +
+
+    '<div style="font-size:12px;color:var(--ink-muted)">' +
+      (p.fechaInicio || p.fechaFin
+        ? UI.esc((p.fechaInicio ? UI.fmtDate(p.fechaInicio) : '—') + ' → ' +
+                 (p.fechaFin ? UI.fmtDate(p.fechaFin) : '—'))
+        : 'Sin fechas definidas') +
+    '</div>' +
+
+    UI.meter(p.avanceCalculado) +
+
+    '<div class="proj-stats">' +
+      '<div><div class="n">' + p.totalTareas + '</div><div class="l">Tareas</div></div>' +
+      '<div><div class="n">' + p.tareasCompletadas + '</div><div class="l">Hechas</div></div>' +
+      '<div><div class="n"' + (p.tareasVencidas ? ' style="color:var(--critical)"' : '') + '>' +
+        p.tareasVencidas + '</div><div class="l">Vencidas</div></div>' +
+    '</div>' +
+
+    '<div class="proj-card-actions">' +
+      '<button class="btn btn-sm" data-act="board" data-pid="' + UI.esc(p.projectId) + '">Abrir tablero</button>' +
+      (admin ? '<button class="btn btn-sm btn-ghost" data-act="edit" data-pid="' +
+        UI.esc(p.projectId) + '">Editar</button>' : '') +
+      (admin ? (p.activo
+        ? '<button class="btn btn-sm btn-ghost" data-act="archive" data-pid="' +
+          UI.esc(p.projectId) + '">Archivar</button>'
+        : '<button class="btn btn-sm btn-ghost" data-act="restore" data-pid="' +
+          UI.esc(p.projectId) + '">Reactivar</button>') : '') +
+    '</div>' +
+  '</article>';
+}
+
+/* ─────────────────────────── Alta / edición ──────────────────────────── */
+
+function openProjectModal(project) {
+  const p = project || {};
+  const isEdit = !!project;
+
+  const overlay = UI.openModal({
+    title: isEdit ? 'Editar proyecto' : 'Nuevo proyecto',
+    subtitle: isEdit ? p.nombre : 'Define el alcance y el responsable',
+    body:
+      '<label class="field"><span>Nombre *</span>' +
+        '<input type="text" name="nombre" maxlength="200" value="' + UI.esc(p.nombre || '') + '" required></label>' +
+      '<label class="field"><span>Descripción</span>' +
+        '<textarea name="descripcion" maxlength="5000">' + UI.esc(p.descripcion || '') + '</textarea></label>' +
+      '<label class="field"><span>Responsable</span>' +
+        '<select name="responsable">' + App.assigneeOptions(p.responsable || '') + '</select></label>' +
+      '<div class="grid-2">' +
+        '<label class="field"><span>Fecha de inicio</span>' +
+          '<input type="date" name="fechaInicio" value="' + UI.esc(p.fechaInicio || '') + '"></label>' +
+        '<label class="field"><span>Fecha objetivo</span>' +
+          '<input type="date" name="fechaFin" value="' + UI.esc(p.fechaFin || '') + '"></label>' +
+      '</div>' +
+      '<div class="grid-2">' +
+        '<label class="field"><span>Estado</span><select name="estado">' +
+          App.statusOptions(p.estado || 'BACKLOG') + '</select></label>' +
+        '<label class="field"><span>Prioridad</span><select name="prioridad">' +
+          App.priorityOptions(p.prioridad || 'MEDIA') + '</select></label>' +
+      '</div>' +
+      '<label class="field" style="margin-bottom:0"><span>% de avance declarado</span>' +
+        '<input type="number" name="porcentajeAvance" min="0" max="100" step="1" value="' +
+          (p.porcentajeAvance === undefined ? 0 : Number(p.porcentajeAvance)) + '">' +
+        '<small style="color:var(--ink-muted);font-size:11.5px">' +
+          'El dashboard usa además el avance calculado desde las tareas.</small></label>',
+    footer:
+      '<button class="btn" data-act="cancel">Cancelar</button>' +
+      '<button class="btn btn-primary" data-act="save">' +
+        (isEdit ? 'Guardar cambios' : 'Crear proyecto') + '</button>',
+    onMount: root => {
+      root.querySelector('[data-act="cancel"]').addEventListener('click', () => UI.closeModal(overlay));
+      root.querySelector('[data-act="save"]').addEventListener('click', ev => {
+        const data = UI.readForm(root);
+        if (!String(data.nombre || '').trim()) {
+          UI.modalError(overlay, 'El nombre del proyecto es obligatorio.');
+          return;
+        }
+        UI.clearModalError(overlay);
+        const done = UI.busy(ev.currentTarget);
+        const call = isEdit
+          ? App.rpc('updateProject', p.projectId, data)
+          : App.rpc('createProject', data);
+        call.then(() => {
+          UI.closeModal(overlay);
+          UI.toast(isEdit ? 'Proyecto actualizado.' : 'Proyecto creado correctamente.', 'ok');
+          return App.reloadProjects().then(() => App.refresh());
+        }).catch(err => {
+          done();
+          UI.modalError(overlay, err.message);
+        });
+      });
+    }
+  });
+}
+
+function archiveProject(projectId, filters) {
+  const p = App.projectById(projectId);
+  UI.confirmDialog('Archivar proyecto',
+    'El proyecto "' + (p ? p.nombre : projectId) + '" dejará de aparecer en los listados. ' +
+    'Sus tareas y su historial se conservan y puedes reactivarlo cuando quieras.',
+    'Archivar', true).then(yes => {
+      if (!yes) return;
+      App.rpc('archiveProject', projectId)
+        .then(() => {
+          UI.toast('Proyecto archivado.', 'ok');
+          return App.reloadProjects().then(() => loadProjects(filters));
+        })
+        .catch(App.handleError);
+    });
+}
+
+function restoreProject(projectId, filters) {
+  App.rpc('restoreProject', projectId)
+    .then(() => {
+      UI.toast('Proyecto reactivado.', 'ok');
+      return App.reloadProjects().then(() => loadProjects(filters));
+    })
+    .catch(App.handleError);
+}
+</script>

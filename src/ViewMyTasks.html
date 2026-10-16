@@ -1,0 +1,104 @@
+<script>
+/* ==========================================================================
+   ViewMyTasks.html — "Mis tareas": todas las tareas asignadas al usuario,
+   ordenadas por urgencia (vencidas primero, luego por prioridad y fecha).
+   ========================================================================== */
+
+App.registerView('mytasks', {
+  title: 'Mis tareas',
+
+  render: function (view) {
+    const f = App.state.myFilters || (App.state.myFilters = {});
+
+    App.setHeader('Mis tareas', 'Tareas asignadas a ' + App.state.user.email,
+      '<button class="btn btn-ghost btn-icon" id="mt-refresh" title="Actualizar">&#8635;</button>');
+    document.getElementById('mt-refresh').addEventListener('click', () => App.refresh());
+
+    view.innerHTML =
+      '<div class="filters">' +
+        '<div class="f f-search"><span>Buscar</span>' +
+          '<input type="search" id="mf-texto" placeholder="Título o descripción" value="' +
+            UI.esc(f.texto || '') + '"></div>' +
+        '<div class="f"><span>Proyecto</span><select id="mf-proj">' +
+          '<option value="">Todos</option>' +
+          App.state.projects.filter(p => p.activo).map(p =>
+            '<option value="' + UI.esc(p.projectId) + '"' +
+            (f.projectId === p.projectId ? ' selected' : '') + '>' +
+            UI.esc(p.nombre) + '</option>').join('') +
+        '</select></div>' +
+        '<div class="f"><span>Estado</span><select id="mf-estado">' +
+          '<option value="">Todos</option>' + App.statusOptions(f.estado || '') + '</select></div>' +
+        '<div class="f"><span>Prioridad</span><select id="mf-prio">' +
+          '<option value="">Todas</option>' + App.priorityOptions(f.prioridad || '') + '</select></div>' +
+        '<label class="inline-check" style="margin-bottom:2px"><input type="checkbox" id="mf-venc"' +
+          (f.soloVencidas ? ' checked' : '') + '> Solo vencidas</label>' +
+        '<button class="btn btn-ghost btn-sm" id="mf-clear">Limpiar</button>' +
+      '</div>' +
+      '<div class="card" id="mt-list">' + UI.skeleton(3) + '</div>';
+
+    const apply = () => {
+      f.texto = document.getElementById('mf-texto').value;
+      f.projectId = document.getElementById('mf-proj').value;
+      f.estado = document.getElementById('mf-estado').value;
+      f.prioridad = document.getElementById('mf-prio').value;
+      f.soloVencidas = document.getElementById('mf-venc').checked;
+      loadMyTasks();
+    };
+    let timer = null;
+    document.getElementById('mf-texto').addEventListener('input', () => {
+      clearTimeout(timer); timer = setTimeout(apply, 280);
+    });
+    ['mf-proj', 'mf-estado', 'mf-prio', 'mf-venc']
+      .forEach(id => document.getElementById(id).addEventListener('change', apply));
+    document.getElementById('mf-clear').addEventListener('click', () => {
+      App.state.myFilters = {};
+      App.refresh();
+    });
+
+    return loadMyTasks();
+  }
+});
+
+function loadMyTasks() {
+  const host = document.getElementById('mt-list');
+  if (!host) return Promise.resolve();
+
+  return App.rpc('getMyTasks', App.state.myFilters || {})
+    .then(rows => {
+      if (!rows.length) {
+        host.innerHTML = UI.empty('&#10003;', 'No tienes tareas asignadas',
+          'Cuando alguien te asigne una tarea aparecerá aquí.');
+        return;
+      }
+      host.innerHTML =
+        '<table class="data"><thead><tr>' +
+          '<th>Tarea</th><th>Proyecto</th><th>Estado</th><th>Prioridad</th>' +
+          '<th>Vencimiento</th><th style="width:140px">Avance</th>' +
+        '</tr></thead><tbody>' +
+        rows.map(t =>
+          '<tr data-tid="' + UI.esc(t.taskId) + '" style="cursor:pointer">' +
+            '<td><strong>' + UI.esc(t.titulo) + '</strong>' +
+              (t.subtareasTotal
+                ? '<div style="font-size:11.5px;color:var(--ink-muted)">' +
+                  '<span aria-hidden="true">&#9745;</span> ' + t.subtareasCompletadas + '/' +
+                  t.subtareasTotal + ' subtareas</div>'
+                : '') +
+            '</td>' +
+            '<td>' + UI.esc(t.proyecto) + '</td>' +
+            '<td><span class="chip">' + UI.esc(App.statusLabel(t.estado)) + '</span></td>' +
+            '<td>' + UI.prioChip(t.prioridad) + '</td>' +
+            '<td>' + UI.dueBadge(t) + '</td>' +
+            '<td>' + UI.meter(t.porcentajeAvance) + '</td>' +
+          '</tr>').join('') +
+        '</tbody></table>';
+
+      host.querySelectorAll('tr[data-tid]').forEach(tr => {
+        tr.addEventListener('click', () => openTaskDetail(tr.getAttribute('data-tid')));
+      });
+    })
+    .catch(err => {
+      host.innerHTML = UI.empty('&#9888;', 'No se pudieron cargar tus tareas', err.message);
+      App.handleError(err);
+    });
+}
+</script>

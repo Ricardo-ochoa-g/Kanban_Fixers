@@ -1,0 +1,365 @@
+<script>
+/* ==========================================================================
+   ViewAdmin.html — Administración (usuarios, auditoría, configuración) y perfil.
+
+   Estas vistas se ocultan a los no-administradores, pero el control real está
+   en el backend: getUsers/getAuditLog/getAppConfig exigen permisos que el rol
+   USER no tiene, así que forzar la navegación no entrega datos.
+   ========================================================================== */
+
+/* ─────────────────────────────── Usuarios ──────────────────────────────── */
+
+App.registerView('admin-users', {
+  title: 'Usuarios',
+  adminOnly: true,
+
+  render: function (view) {
+    App.setHeader('Usuarios', 'Solo las cuentas registradas y activas pueden entrar a la aplicación',
+      '<button class="btn btn-primary" id="u-new">+ Agregar usuario</button>');
+    document.getElementById('u-new').addEventListener('click', () => openUserModal(null));
+
+    view.innerHTML = '<div class="card" id="u-list">' + UI.skeleton(3) + '</div>';
+    return loadUsers();
+  }
+});
+
+function loadUsers() {
+  const host = document.getElementById('u-list');
+  if (!host) return Promise.resolve();
+
+  return App.rpc('getUsers')
+    .then(rows => {
+      host.innerHTML =
+        '<table class="data"><thead><tr>' +
+          '<th>Nombre</th><th>Correo</th><th>Rol</th><th>Estado</th>' +
+          '<th>Creado</th><th>Último acceso</th><th></th>' +
+        '</tr></thead><tbody>' +
+        rows.map(u =>
+          '<tr data-uid="' + UI.esc(u.userId) + '"' + (u.activo ? '' : ' class="row-inactive"') + '>' +
+            '<td><div style="display:flex;align-items:center;gap:8px">' +
+              UI.avatarXs(u.nombre, u.email) + '<strong>' + UI.esc(u.nombre) + '</strong>' +
+              (u.userId === App.state.user.userId
+                ? '<span class="chip" style="font-size:10px">tú</span>' : '') +
+            '</div></td>' +
+            '<td>' + UI.esc(u.email) + '</td>' +
+            '<td><span class="chip">' + UI.esc(u.rol) + '</span></td>' +
+            '<td>' + (u.activo
+              ? '<span class="chip" style="color:var(--good);border-color:var(--good);' +
+                'background:var(--good-soft)"><span aria-hidden="true">&#10003;</span>Activo</span>'
+              : '<span class="chip"><span aria-hidden="true">&#9679;</span>Inactivo</span>') + '</td>' +
+            '<td>' + UI.esc(UI.fmtDate((u.fechaCreacion || '').slice(0, 10))) + '</td>' +
+            '<td>' + (u.ultimoAcceso
+              ? UI.esc(UI.fmtDateTime(u.ultimoAcceso))
+              : '<span style="color:var(--ink-muted)">nunca</span>') + '</td>' +
+            '<td style="white-space:nowrap">' +
+              '<button class="btn btn-sm btn-ghost" data-u="edit">Editar</button>' +
+              '<button class="btn btn-sm btn-ghost" data-u="toggle">' +
+                (u.activo ? 'Desactivar' : 'Activar') + '</button>' +
+            '</td>' +
+          '</tr>').join('') +
+        '</tbody></table>';
+
+      host.querySelectorAll('tr[data-uid]').forEach(tr => {
+        const uid = tr.getAttribute('data-uid');
+        const user = rows.filter(u => u.userId === uid)[0];
+        tr.querySelector('[data-u="edit"]').addEventListener('click', () => openUserModal(user));
+        tr.querySelector('[data-u="toggle"]').addEventListener('click', () => toggleUser(user));
+      });
+    })
+    .catch(err => {
+      host.innerHTML = UI.empty('&#9888;', 'No se pudieron cargar los usuarios', err.message);
+      App.handleError(err);
+    });
+}
+
+function openUserModal(user) {
+  const u = user || {};
+  const isEdit = !!user;
+  const roles = App.state.meta.roles || ['ADMIN', 'USER'];
+
+  const overlay = UI.openModal({
+    title: isEdit ? 'Editar usuario' : 'Agregar usuario',
+    subtitle: isEdit ? u.email : 'Debe ser una cuenta de Google (Gmail o Workspace)',
+    body:
+      '<label class="field"><span>Nombre *</span>' +
+        '<input type="text" name="nombre" maxlength="120" value="' + UI.esc(u.nombre || '') + '"></label>' +
+      '<label class="field"><span>Correo de Google *</span>' +
+        '<input type="email" name="email" value="' + UI.esc(u.email || '') + '" ' +
+        'placeholder="persona@gmail.com"></label>' +
+      '<div class="grid-2">' +
+        '<label class="field"><span>Rol</span><select name="rol">' +
+          UI.optionList(roles, u.rol || 'USER') + '</select></label>' +
+        '<label class="field"><span>Estado</span><select name="activo">' +
+          '<option value="true"' + (u.activo === false ? '' : ' selected') + '>Activo</option>' +
+          '<option value="false"' + (u.activo === false ? ' selected' : '') + '>Inactivo</option>' +
+        '</select></label>' +
+      '</div>' +
+      '<div style="font-size:12px;color:var(--ink-muted);line-height:1.6">' +
+        'El acceso se valida contra este correo en el backend. Un usuario inactivo no puede ' +
+        'entrar ni ejecutar ninguna operación, aunque tenga la URL.' +
+      '</div>',
+    footer:
+      '<button class="btn" data-act="cancel">Cancelar</button>' +
+      '<button class="btn btn-primary" data-act="save">' +
+        (isEdit ? 'Guardar cambios' : 'Agregar usuario') + '</button>',
+    onMount: root => {
+      root.querySelector('[data-act="cancel"]').addEventListener('click', () => UI.closeModal(overlay));
+      root.querySelector('[data-act="save"]').addEventListener('click', ev => {
+        const data = UI.readForm(root);
+        data.activo = data.activo === 'true' || data.activo === true;
+        if (!String(data.nombre || '').trim()) {
+          UI.modalError(overlay, 'El nombre es obligatorio.'); return;
+        }
+        if (!String(data.email || '').trim()) {
+          UI.modalError(overlay, 'El correo es obligatorio.'); return;
+        }
+        UI.clearModalError(overlay);
+        const done = UI.busy(ev.currentTarget);
+        const call = isEdit
+          ? App.rpc('updateUser', u.userId, data)
+          : App.rpc('createUser', data);
+        call.then(() => {
+          UI.closeModal(overlay);
+          UI.toast(isEdit ? 'Usuario actualizado.' : 'Usuario agregado.', 'ok');
+          return refreshAssignables().then(loadUsers);
+        }).catch(err => { done(); UI.modalError(overlay, err.message); });
+      });
+    }
+  });
+}
+
+function toggleUser(user) {
+  const action = user.activo ? 'Desactivar' : 'Activar';
+  UI.confirmDialog(action + ' usuario',
+    (user.activo
+      ? 'Al desactivar a ' + user.nombre + ' perderá el acceso de inmediato, incluso si ya tiene la aplicación abierta.'
+      : 'Al activar a ' + user.nombre + ' podrá entrar con su cuenta de Google.'),
+    action, user.activo).then(yes => {
+      if (!yes) return;
+      App.rpc('toggleUserStatus', user.userId)
+        .then(() => {
+          UI.toast('Usuario ' + (user.activo ? 'desactivado' : 'activado') + '.', 'ok');
+          return refreshAssignables().then(loadUsers);
+        })
+        .catch(App.handleError);
+    });
+}
+
+/** Mantiene sincronizados los selectores de responsable tras cambios de usuarios. */
+function refreshAssignables() {
+  return App.rpc('getAssignableUsers')
+    .then(list => { App.state.assignables = list || []; })
+    .catch(() => { /* no bloquea la operación principal */ });
+}
+
+/* ─────────────────────────────── Auditoría ─────────────────────────────── */
+
+const AUDIT_ACTIONS = ['CREATE', 'UPDATE', 'DELETE', 'RESTORE', 'MOVE', 'STATUS_CHANGE',
+  'ASSIGN', 'PROGRESS', 'COMMENT', 'ROLE_CHANGE', 'TOGGLE_STATUS', 'CONFIG'];
+const AUDIT_ENTITIES = ['PROJECT', 'TASK', 'SUBTASK', 'COMMENT', 'USER', 'CONFIG'];
+
+App.registerView('admin-audit', {
+  title: 'Auditoría',
+  adminOnly: true,
+
+  render: function (view) {
+    const f = App.state.auditFilters || (App.state.auditFilters = {});
+
+    App.setHeader('Auditoría', 'Registro de acciones realizadas en la aplicación', '');
+
+    view.innerHTML =
+      '<div class="filters">' +
+        '<div class="f f-search"><span>Buscar</span>' +
+          '<input type="search" id="af-texto" placeholder="ID, valor o texto" value="' +
+            UI.esc(f.texto || '') + '"></div>' +
+        '<div class="f"><span>Entidad</span><select id="af-entidad">' +
+          '<option value="">Todas</option>' + UI.optionList(AUDIT_ENTITIES, f.entidad || '') +
+        '</select></div>' +
+        '<div class="f"><span>Acción</span><select id="af-accion">' +
+          '<option value="">Todas</option>' + UI.optionList(AUDIT_ACTIONS, f.accion || '') +
+        '</select></div>' +
+        '<div class="f"><span>Usuario</span><select id="af-email">' +
+          '<option value="">Todos</option>' +
+          App.state.assignables.map(u => '<option value="' + UI.esc(u.email) + '"' +
+            (f.email === u.email ? ' selected' : '') + '>' + UI.esc(u.nombre) + '</option>').join('') +
+        '</select></div>' +
+        '<div class="f"><span>Desde</span><input type="date" id="af-desde" value="' +
+          UI.esc(f.desde || '') + '"></div>' +
+        '<div class="f"><span>Hasta</span><input type="date" id="af-hasta" value="' +
+          UI.esc(f.hasta || '') + '"></div>' +
+        '<button class="btn btn-ghost btn-sm" id="af-clear">Limpiar</button>' +
+      '</div>' +
+      '<div class="card" id="a-list">' + UI.skeleton(4) + '</div>';
+
+    const apply = () => {
+      f.texto = document.getElementById('af-texto').value;
+      f.entidad = document.getElementById('af-entidad').value;
+      f.accion = document.getElementById('af-accion').value;
+      f.email = document.getElementById('af-email').value;
+      f.desde = document.getElementById('af-desde').value;
+      f.hasta = document.getElementById('af-hasta').value;
+      loadAudit();
+    };
+    let timer = null;
+    document.getElementById('af-texto').addEventListener('input', () => {
+      clearTimeout(timer); timer = setTimeout(apply, 300);
+    });
+    ['af-entidad', 'af-accion', 'af-email', 'af-desde', 'af-hasta']
+      .forEach(id => document.getElementById(id).addEventListener('change', apply));
+    document.getElementById('af-clear').addEventListener('click', () => {
+      App.state.auditFilters = {};
+      App.refresh();
+    });
+
+    return loadAudit();
+  }
+});
+
+function loadAudit() {
+  const host = document.getElementById('a-list');
+  if (!host) return Promise.resolve();
+
+  return App.rpc('getAuditLog', Object.assign({ limit: 200 }, App.state.auditFilters || {}))
+    .then(res => {
+      if (!res.rows.length) {
+        host.innerHTML = UI.empty('&#128220;', 'Sin registros', 'Ninguna acción coincide con el filtro.');
+        return;
+      }
+      host.innerHTML =
+        '<div class="card-head"><div><h2>' + res.rows.length + ' de ' + res.total + ' registros</h2>' +
+          '<div class="sub">' + (res.truncated
+            ? 'Resultado truncado: afina los filtros para ver registros más antiguos.'
+            : 'Del más reciente al más antiguo.') + '</div></div></div>' +
+        '<table class="data"><thead><tr>' +
+          '<th>Fecha</th><th>Usuario</th><th>Acción</th><th>Entidad</th>' +
+          '<th>ID</th><th>Antes</th><th>Después</th>' +
+        '</tr></thead><tbody>' +
+        res.rows.map(r =>
+          '<tr>' +
+            '<td style="white-space:nowrap">' + UI.esc(UI.fmtDateTime(r.fecha)) + '</td>' +
+            '<td>' + UI.esc(r.email) + '</td>' +
+            '<td><span class="chip">' + UI.esc(r.accion) + '</span></td>' +
+            '<td>' + UI.esc(r.entidad) + '</td>' +
+            '<td style="font-size:11.5px;color:var(--ink-muted)">' + UI.esc(r.entityId) + '</td>' +
+            '<td style="font-size:11.5px">' + UI.esc(shortJson(r.valorAnterior)) + '</td>' +
+            '<td style="font-size:11.5px">' + UI.esc(shortJson(r.valorNuevo)) + '</td>' +
+          '</tr>').join('') +
+        '</tbody></table>';
+    })
+    .catch(err => {
+      host.innerHTML = UI.empty('&#9888;', 'No se pudo cargar la auditoría', err.message);
+      App.handleError(err);
+    });
+}
+
+function shortJson(value) {
+  if (value === null || value === undefined || value === '') return '—';
+  if (typeof value === 'string') return value.length > 90 ? value.slice(0, 90) + '…' : value;
+  const parts = Object.keys(value).map(k => (FIELD_LABEL[k] || k) + ': ' + value[k]);
+  const s = parts.join(' · ');
+  return s.length > 90 ? s.slice(0, 90) + '…' : s;
+}
+
+/* ───────────────────────────── Configuración ───────────────────────────── */
+
+App.registerView('admin-config', {
+  title: 'Configuración',
+  adminOnly: true,
+
+  render: function (view) {
+    App.setHeader('Configuración', 'Parámetros generales de la aplicación (hoja CONFIG)', '');
+    view.innerHTML = '<div class="card" id="c-list">' + UI.skeleton(2) + '</div>';
+    return loadConfig();
+  }
+});
+
+function loadConfig() {
+  const host = document.getElementById('c-list');
+  if (!host) return Promise.resolve();
+
+  return App.rpc('getAppConfig')
+    .then(rows => {
+      host.innerHTML =
+        '<table class="data"><thead><tr><th>Parámetro</th><th>Valor</th>' +
+        '<th>Descripción</th><th></th></tr></thead><tbody>' +
+        rows.map(r =>
+          '<tr data-key="' + UI.esc(r.clave) + '">' +
+            '<td><code style="font-size:12px">' + UI.esc(r.clave) + '</code></td>' +
+            '<td style="width:160px"><input type="text" class="cfg-val" value="' +
+              UI.esc(r.valor) + '" maxlength="500"></td>' +
+            '<td style="font-size:12.5px;color:var(--ink-2)">' + UI.esc(r.descripcion) + '</td>' +
+            '<td><button class="btn btn-sm" data-cfg="save">Guardar</button></td>' +
+          '</tr>').join('') +
+        '</tbody></table>';
+
+      host.querySelectorAll('tr[data-key]').forEach(tr => {
+        const key = tr.getAttribute('data-key');
+        const input = tr.querySelector('.cfg-val');
+        const save = ev => {
+          const done = UI.busy(ev && ev.currentTarget, 'Guardando');
+          App.rpc('updateAppConfig', key, input.value)
+            .then(() => {
+              UI.toast('Cambios guardados. Algunos parámetros requieren recargar la app.', 'ok');
+              return loadConfig();
+            })
+            .catch(err => { done(); App.handleError(err); });
+        };
+        tr.querySelector('[data-cfg="save"]').addEventListener('click', save);
+        input.addEventListener('keydown', e => { if (e.key === 'Enter') save(null); });
+      });
+    })
+    .catch(err => {
+      host.innerHTML = UI.empty('&#9888;', 'No se pudo cargar la configuración', err.message);
+      App.handleError(err);
+    });
+}
+
+/* ──────────────────────────────── Mi perfil ────────────────────────────── */
+
+App.registerView('profile', {
+  title: 'Mi perfil',
+
+  render: function (view) {
+    const u = App.state.user;
+    App.setHeader('Mi perfil', 'Datos de tu cuenta en la aplicación', '');
+
+    view.innerHTML =
+      '<div class="card" style="max-width:520px"><div class="card-body">' +
+        '<div style="display:flex;align-items:center;gap:12px;margin-bottom:18px">' +
+          '<div class="avatar" style="width:44px;height:44px;flex:0 0 44px;font-size:16px">' +
+            UI.esc(UI.initials(u.nombre, u.email)) + '</div>' +
+          '<div><div style="font-weight:650;font-size:15px">' + UI.esc(u.nombre) + '</div>' +
+          '<div style="font-size:12.5px;color:var(--ink-muted)">' + UI.esc(u.email) + '</div></div>' +
+        '</div>' +
+        '<label class="field"><span>Nombre para mostrar</span>' +
+          '<input type="text" id="pr-nombre" maxlength="120" value="' + UI.esc(u.nombre) + '"></label>' +
+        '<div class="grid-2">' +
+          '<label class="field"><span>Rol</span>' +
+            '<input type="text" value="' + UI.esc(u.rol) + '" disabled></label>' +
+          '<label class="field"><span>Último acceso</span>' +
+            '<input type="text" value="' + UI.esc(UI.fmtDateTime(u.ultimoAcceso) || '—') + '" disabled></label>' +
+        '</div>' +
+        '<div style="font-size:12px;color:var(--ink-muted);margin-bottom:14px">' +
+          'El correo y el rol los administra un ADMIN: tu identidad la entrega Google, no esta pantalla.' +
+        '</div>' +
+        '<button class="btn btn-primary" id="pr-save">Guardar</button>' +
+      '</div></div>';
+
+    document.getElementById('pr-save').addEventListener('click', ev => {
+      const nombre = document.getElementById('pr-nombre').value;
+      const done = UI.busy(ev.currentTarget);
+      App.rpc('updateMyProfile', { nombre: nombre })
+        .then(res => {
+          App.state.user.nombre = res.nombre;
+          document.getElementById('who-name').textContent = res.nombre;
+          document.getElementById('who-avatar').textContent =
+            UI.initials(res.nombre, App.state.user.email);
+          done();
+          UI.toast('Cambios guardados.', 'ok');
+          return refreshAssignables();
+        })
+        .catch(err => { done(); App.handleError(err); });
+    });
+  }
+});
+</script>
