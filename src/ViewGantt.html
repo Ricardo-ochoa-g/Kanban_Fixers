@@ -11,9 +11,11 @@
    · Todos los textos de datos pasan por UI.esc().
    ========================================================================== */
 
-var Gantt = { data: null, projectId: null, scale: 'month', geo: null, drag: null, tip: null };
+var Gantt = { data: null, projectId: null, scale: 'month', geo: null, drag: null, tip: null,
+  hidden: {}, pop: null };
 
 var GT_SCALES = [
+  { v: 'day',       label: 'Día',          ppd: 44,  minCols: 14, defLen: 3 },
   { v: 'week',      label: 'Semana',       ppd: 30,  minCols: 8, defLen: 4 },
   { v: 'month',     label: 'Mes',          ppd: 7,   minCols: 6, defLen: 14 },
   { v: 'quarter',   label: 'Trimestre',    ppd: 2.4, minCols: 4, defLen: 30 },
@@ -22,6 +24,7 @@ var GT_SCALES = [
   { v: 'year',      label: 'Año',          ppd: 0.6, minCols: 3, defLen: 90 }
 ];
 var GT_MONTHS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+var GT_WEEKDAYS = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
 var GT_MONTHS_LONG = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto',
   'septiembre', 'octubre', 'noviembre', 'diciembre'];
 var GT_MONTHS_PER = { month: 1, quarter: 3, fourmonth: 4, semester: 6, year: 12 };
@@ -55,12 +58,14 @@ function gtLong(iso) { var d = gtDay(iso); if (d === null) return ''; var p = gt
 
 /** Inicio de la unidad (semana lunes-domingo, mes, trimestre…) que contiene `day`. */
 function gtUnitStart(scale, day) {
+  if (scale === 'day') return day;
   if (scale === 'week') return day - ((((day + 3) % 7) + 7) % 7);   // el 1-ene-1970 fue jueves
   var n = GT_MONTHS_PER[scale];
   var p = gtParts(day);
   return gtMonthStart(p.y, Math.floor(p.m / n) * n);
 }
 function gtUnitNext(scale, start) {
+  if (scale === 'day') return start + 1;
   if (scale === 'week') return start + 7;
   var p = gtParts(start);
   return gtMonthStart(p.y, p.m + GT_MONTHS_PER[scale]);
@@ -68,6 +73,7 @@ function gtUnitNext(scale, start) {
 function gtColLabel(scale, start) {
   var p = gtParts(start);
   switch (scale) {
+    case 'day': return GT_WEEKDAYS[(((start + 4) % 7) + 7) % 7] + ' ' + p.d;
     case 'week': return p.d + ' ' + GT_MONTHS[p.m];
     case 'month': return GT_MONTHS[p.m];
     case 'quarter': return 'T' + (p.m / 3 + 1);
@@ -79,9 +85,14 @@ function gtColLabel(scale, start) {
 /** Texto de la fila superior (columnas agrupadas). null = escala sin agrupación. */
 function gtUpperLabel(scale, start) {
   var p = gtParts(start);
-  if (scale === 'week') return GT_MONTHS_LONG[p.m] + ' ' + p.y;
+  if (scale === 'week' || scale === 'day') return GT_MONTHS_LONG[p.m] + ' ' + p.y;
   if (scale === 'year') return null;
   return String(p.y);
+}
+
+function gtIsWeekend(day) {
+  const w = (((day + 4) % 7) + 7) % 7;
+  return w === 0 || w === 6;
 }
 
 function gtScaleDef(v) {
@@ -196,6 +207,8 @@ App.registerView('gantt', {
     const pid = params.projectId || App.state.currentProjectId || projects[0].projectId;
     App.state.currentProjectId = projects.some(p => p.projectId === pid) ? pid : projects[0].projectId;
     Gantt.projectId = App.state.currentProjectId;
+    gtCloseFilter();
+    gtLoadHidden();
 
     try {
       const saved = window.localStorage && localStorage.getItem('kw-gantt-scale');
@@ -210,6 +223,24 @@ App.registerView('gantt', {
   }
 });
 
+function gtRowKey(grupo, fila) { return grupo + '\u0001' + fila; }
+
+function gtHiddenStorageKey() { return 'kw-gantt-hidden-' + Gantt.projectId; }
+
+function gtLoadHidden() {
+  Gantt.hidden = {};
+  try {
+    const raw = window.localStorage && localStorage.getItem(gtHiddenStorageKey());
+    if (raw) JSON.parse(raw).forEach(k => { Gantt.hidden[k] = true; });
+  } catch (e) { /* sin almacenamiento: todo visible */ }
+}
+
+function gtSaveHidden() {
+  try {
+    if (window.localStorage) localStorage.setItem(gtHiddenStorageKey(), JSON.stringify(Object.keys(Gantt.hidden)));
+  } catch (e) { /* noop */ }
+}
+
 function gtCanWrite() { return App.can('gantt.write'); }
 
 function gtHeader(subtitle) {
@@ -223,6 +254,7 @@ function gtHeader(subtitle) {
       GT_SCALES.map(s => '<option value="' + s.v + '"' + (s.v === Gantt.scale ? ' selected' : '') + '>' +
         UI.esc(s.label) + '</option>').join('') +
     '</select>' +
+    '<button class="btn" id="gt-filter" aria-haspopup="true">' + UI.esc(gtFilterLabel()) + ' &#9662;</button>' +
     (gtCanWrite() ? '<button class="btn btn-primary" id="gt-new">+ Actividad</button>' : '') +
     '<button class="btn btn-ghost btn-icon" id="gt-refresh" title="Actualizar">&#8635;</button>');
 
@@ -234,6 +266,9 @@ function gtHeader(subtitle) {
     try { if (window.localStorage) localStorage.setItem('kw-gantt-scale', Gantt.scale); } catch (err) { /* noop */ }
     gtRender(true);
   });
+  document.getElementById('gt-filter').addEventListener('click', e => {
+    if (Gantt.pop) gtCloseFilter(); else gtOpenFilter(e.currentTarget);
+  });
   const nw = document.getElementById('gt-new');
   if (nw) nw.addEventListener('click', () => gtOpenModal(null, {}));
   document.getElementById('gt-refresh').addEventListener('click', () => App.refresh());
@@ -244,6 +279,18 @@ function gtLoad() {
     Gantt.data = data;
     gtRender(true);
   });
+}
+
+/** Filas (grupo, fila) existentes, agrupadas, con su nº de actividades. */
+function gtAllRows() {
+  return gtGroups(Gantt.data ? Gantt.data.items : []);
+}
+
+function gtFilterLabel() {
+  const groups = gtAllRows();
+  let total = 0, shown = 0;
+  groups.forEach(g => g.rows.forEach(r => { total++; if (!Gantt.hidden[gtRowKey(r.grupo, r.fila)]) shown++; }));
+  return shown === total ? 'Acciones' : 'Acciones (' + shown + '/' + total + ')';
 }
 
 function gtFind(id) {
@@ -277,8 +324,16 @@ function gtRender(scrollToWork) {
   const prevTop = host.firstChild && host.firstChild.scrollTop || 0;
 
   const sc = gtScaleDef(Gantt.scale);
-  const geo = Gantt.geo = gtBuildGeo(data, sc);
-  const groups = gtGroups(data.items);
+  const geo = Gantt.geo = gtBuildGeo(data, sc);   // el rango no depende del filtro: las columnas no se mueven
+  const visible = data.items.filter(i => !Gantt.hidden[gtRowKey(i.grupo, i.fila)]);
+  if (!visible.length) {
+    host.innerHTML = UI.empty('&#128065;', 'Todas las acciones están ocultas',
+      'Usa el filtro "Acciones" para mostrarlas.') +
+      '<div style="text-align:center"><button class="btn" id="gt-show-all">Mostrar todas</button></div>';
+    document.getElementById('gt-show-all').addEventListener('click', () => { Gantt.hidden = {}; gtSaveHidden(); gtRender(true); });
+    return;
+  }
+  const groups = gtGroups(visible);
   const today = gtToday();
   const LW = GT_GROUP_W + GT_LABEL_W;
 
@@ -291,10 +346,13 @@ function gtRender(scrollToWork) {
   }
   head += '<div class="gt-lowrow">' + geo.cols.map(c =>
     '<div class="gt-lc' + (today >= c.start && today < c.end ? ' is-today' : '') +
+    (sc.v === 'day' && gtIsWeekend(c.start) ? ' is-weekend' : '') +
     '" style="width:' + Math.round((c.end - c.start) * geo.ppd) + 'px">' +
     UI.esc(gtColLabel(sc.v, c.start)) + '</div>').join('') + '</div></div></div>';
 
   let lines = '<div class="gt-lines" style="left:' + LW + 'px;width:' + geo.totalW + 'px">' +
+    (sc.v === 'day' ? geo.cols.filter(c => gtIsWeekend(c.start)).map(c =>
+      '<i class="gt-wkend" style="left:' + Math.round(gtX(geo, c.start)) + 'px;width:' + Math.round(geo.ppd) + 'px"></i>').join('') : '') +
     geo.cols.slice(1).map(c => '<i class="gt-vline" style="left:' + Math.round(gtX(geo, c.start)) + 'px"></i>').join('');
   if (today >= geo.rs && today < geo.re) {
     lines += '<i class="gt-today" title="Hoy" style="left:' + Math.round(gtX(geo, today) + geo.ppd / 2) + 'px"></i>';
@@ -464,6 +522,100 @@ function gtUp() {
     });
 }
 
+/* ───────────────────────────── Filtro de acciones ──────────────────────── */
+
+function gtOpenFilter(btn) {
+  gtCloseFilter();
+  const pop = document.createElement('div');
+  pop.className = 'gt-pop';
+  pop.id = 'gt-pop';
+  document.body.appendChild(pop);
+  Gantt.pop = pop;
+  gtFillPop(pop);
+
+  const r = btn.getBoundingClientRect();
+  pop.style.top = (r.bottom + 6) + 'px';
+  pop.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+
+  pop.addEventListener('change', e => {
+    const el = e.target;
+    const g = el.getAttribute('data-g'), f = el.getAttribute('data-f');
+    const rows = gtAllRows();
+    if (f === null) {   // casilla de grupo: aplica a todas sus filas
+      rows.filter(x => x.name === g).forEach(x => x.rows.forEach(r => {
+        if (el.checked) delete Gantt.hidden[gtRowKey(r.grupo, r.fila)]; else Gantt.hidden[gtRowKey(r.grupo, r.fila)] = true;
+      }));
+    } else if (el.checked) delete Gantt.hidden[gtRowKey(g, f)];
+    else Gantt.hidden[gtRowKey(g, f)] = true;
+    gtPopApply(pop);
+  });
+  pop.addEventListener('click', e => {
+    const b = e.target.closest ? e.target.closest('[data-all]') : null;
+    if (!b) return;
+    Gantt.hidden = {};
+    if (b.getAttribute('data-all') === '0') {
+      gtAllRows().forEach(g => g.rows.forEach(r => { Gantt.hidden[gtRowKey(r.grupo, r.fila)] = true; }));
+    }
+    gtPopApply(pop);
+  });
+
+  setTimeout(() => {
+    document.addEventListener('mousedown', gtPopOutside, true);
+    document.addEventListener('keydown', gtPopKey, true);
+  }, 0);
+}
+
+function gtPopApply(pop) {
+  gtSaveHidden();
+  const body = pop.querySelector('.gt-pop-body');
+  const top = body ? body.scrollTop : 0;
+  gtRender(false);
+  gtFillPop(pop);
+  const nb = pop.querySelector('.gt-pop-body');
+  if (nb) nb.scrollTop = top;
+}
+
+function gtFillPop(pop) {
+  const groups = gtAllRows();
+  let html = '<div class="gt-pop-head"><strong>Acciones visibles</strong><span>' +
+    '<button class="btn btn-sm btn-ghost" data-all="1">Todas</button>' +
+    '<button class="btn btn-sm btn-ghost" data-all="0">Ninguna</button></span></div><div class="gt-pop-body">';
+  if (!groups.length) html += '<p style="margin:10px;color:var(--ink-muted)">Aún no hay acciones.</p>';
+  groups.forEach(g => {
+    html += '<label class="gt-pop-g"><input type="checkbox" data-g="' + UI.esc(g.name) + '"> ' + UI.esc(g.name) + '</label>';
+    g.rows.forEach(r => {
+      html += '<label class="gt-pop-r"><input type="checkbox" data-g="' + UI.esc(r.grupo) + '" data-f="' + UI.esc(r.fila) +
+        '"' + (Gantt.hidden[gtRowKey(r.grupo, r.fila)] ? '' : ' checked') + '> <span>' + UI.esc(r.fila) + '</span>' +
+        '<small>' + r.items.length + '</small></label>';
+    });
+  });
+  pop.innerHTML = html + '</div>';
+
+  // Estado de cada casilla de grupo: marcada, vacía o indeterminada.
+  groups.forEach(g => {
+    const shown = g.rows.filter(r => !Gantt.hidden[gtRowKey(r.grupo, r.fila)]).length;
+    pop.querySelectorAll('input[data-g]:not([data-f])').forEach(cb => {
+      if (cb.getAttribute('data-g') !== g.name) return;
+      cb.checked = shown === g.rows.length;
+      cb.indeterminate = shown > 0 && shown < g.rows.length;
+    });
+  });
+}
+
+function gtPopOutside(e) {
+  if (!Gantt.pop) return;
+  if (Gantt.pop.contains(e.target) || (e.target.closest && e.target.closest('#gt-filter'))) return;
+  gtCloseFilter();
+}
+
+function gtPopKey(e) { if (e.key === 'Escape') { e.stopPropagation(); gtCloseFilter(); } }
+
+function gtCloseFilter() {
+  if (Gantt.pop) { Gantt.pop.remove(); Gantt.pop = null; }
+  document.removeEventListener('mousedown', gtPopOutside, true);
+  document.removeEventListener('keydown', gtPopKey, true);
+}
+
 /* ───────────────────────────── Alta / edición ──────────────────────────── */
 
 function gtLaneDblClick(e) {
@@ -528,6 +680,9 @@ function gtOpenModal(item, preset) {
         call.then(res => {
           UI.closeModal(overlay);
           Gantt.data = res;
+          const rowKey = gtRowKey(String(data.grupo || '').trim() || 'General',
+            String(data.fila || '').trim() || String(data.titulo).trim());
+          if (Gantt.hidden[rowKey]) { delete Gantt.hidden[rowKey]; gtSaveHidden(); }
           gtRender(false);
           UI.toast(isEdit ? 'Actividad actualizada.' : 'Actividad creada.', 'ok');
         }).catch(err => { done(); UI.modalError(overlay, err.message); });

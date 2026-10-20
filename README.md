@@ -68,8 +68,8 @@ no importa: Apps Script evalúa todos los `.gs` en un único ámbito global.
 |---|---|
 | `tools/verify.js` | Comprobaciones estáticas: sintaxis, colisiones de declaraciones, RPC ↔ API, `include` ↔ archivos, campos ↔ esquema, rutas ↔ vistas, heurística XSS |
 | `tools/gasenv.js` | Simulador en memoria de los servicios de Apps Script |
-| `tools/sim.js` | 135 pruebas funcionales del backend (instalación, permisos, Kanban, avance, auditoría…) |
-| `tools/uitest.js` | 87 pruebas de extremo a extremo del frontend real sobre jsdom |
+| `tools/sim.js` | 142 pruebas funcionales del backend (instalación, permisos, Kanban, avance, auditoría…) |
+| `tools/uitest.js` | 103 pruebas de extremo a extremo del frontend real sobre jsdom |
 
 ```bash
 npm install jsdom
@@ -308,10 +308,11 @@ Las marcadas con ✅ están cubiertas automáticamente por `tools/sim.js` y
 ### Carta Gantt
 
 - [ ] La vista **Gantt** (o el botón *Gantt* de la tarjeta de un proyecto) muestra las actividades del proyecto elegido
-- [ ] El selector de escala (Semana, Mes, Trimestre, Cuatrimestre, Semestre, Año) cambia las columnas y su agrupación sin alterar las fechas
+- [ ] El selector de escala (Día, Semana, Mes, Trimestre, Cuatrimestre, Semestre, Año) cambia las columnas y su agrupación sin alterar las fechas
 - [ ] **+ Actividad** crea una cajita; doble clic en una fila crea otra en esa misma fila
 - [ ] Arrastrar una cajita la mueve (y a otra fila si se suelta sobre ella); tirar de los bordes cambia inicio o término; se persiste al soltar
 - [ ] Clic en una cajita abre su edición, con opción de eliminar
+- [ ] El filtro **Acciones** permite mostrar u ocultar filas (por fila, por grupo o todas); la elección se recuerda por proyecto en el navegador
 
 ### Tareas, subtareas y comentarios
 

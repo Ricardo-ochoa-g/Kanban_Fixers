@@ -597,6 +597,8 @@ table.data td.num { text-align: right; font-variant-numeric: tabular-nums; }
 }
 .gt-lc { color: var(--ink-2); }
 .gt-lc.is-today { font-weight: 700; color: var(--accent-strong); }
+.gt-lc.is-weekend { color: var(--ink-muted); }
+.gt-wkend { position: absolute; top: 0; bottom: 0; background: var(--surface-2); opacity: .7; }
 
 .gt-body { position: relative; }
 .gt-lines { position: absolute; top: 0; bottom: 0; pointer-events: none; z-index: 1; }
@@ -639,6 +641,18 @@ table.data td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .gt-bar.dragging { cursor: grabbing; z-index: 10; opacity: .92; box-shadow: var(--shadow-2); }
 .gt-ro .gt-bar { cursor: default; }
 .gt-ro .gt-bar .h { display: none; }
+.gt-pop {
+  position: fixed; z-index: 120; width: 300px; max-height: min(70vh, 520px); display: flex; flex-direction: column;
+  background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--radius); box-shadow: var(--shadow-3);
+}
+.gt-pop-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px 8px 14px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.gt-pop-body { overflow: auto; padding: 4px 6px 10px; }
+.gt-pop-g, .gt-pop-r { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.gt-pop-g { margin-top: 6px; font-weight: 650; }
+.gt-pop-r { padding-left: 26px; }
+.gt-pop-g:hover, .gt-pop-r:hover { background: var(--surface-2); }
+.gt-pop-r span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gt-pop-r small { margin-left: auto; color: var(--ink-muted); }
 .gt-tip {
   position: fixed; z-index: 300; pointer-events: none; padding: 3px 8px; border-radius: 6px;
   background: var(--ink); color: var(--page); font-size: 11.5px; white-space: nowrap;

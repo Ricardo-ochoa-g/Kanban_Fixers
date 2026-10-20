@@ -286,9 +286,9 @@ function boot(env, getEmail) {
   check('la vista Gantt carga con un selector de proyecto y de escala',
     !!doc.getElementById('gt-project') && !!doc.getElementById('gt-scale'));
   check('sin actividades se muestra el estado vacío', !!doc.querySelector('#gt-host .empty'));
-  check('el selector de escala ofrece las 6 opciones',
+  check('el selector de escala ofrece las 7 opciones',
     [...doc.querySelectorAll('#gt-scale option')].map(o => o.value).join(',') ===
-      'week,month,quarter,fourmonth,semester,year');
+      'day,week,month,quarter,fourmonth,semester,year');
 
   // Alta desde el modal
   doc.getElementById('gt-new').click();
@@ -423,6 +423,94 @@ function boot(env, getEmail) {
   doc.querySelector('.overlay [data-act="yes"]').click();
   await flush(20);
   check('eliminar una actividad la quita del Gantt', ganttItems().length === nBefore - 1);
+
+  // Escala Día
+  await setScale('day');
+  check('escala Día: columnas por día con día de la semana, agrupadas por mes',
+    /^(dom|lun|mar|mié|jue|vie|sáb) \d+$/.test(lowLabels()[0]) && /^[a-záéíóú]+ 20\d\d$/.test(upLabels()[0]),
+    lowLabels().slice(0, 3).join(',') + ' / ' + upLabels().join(','));
+  check('en escala Día se marcan los fines de semana',
+    doc.querySelectorAll('.gt-lc.is-weekend').length > 0 && doc.querySelectorAll('.gt-wkend').length > 0);
+  await setScale('month');
+
+  // Filtro de acciones
+  env.as(env.ownerEmail);
+  env.call('createGanttItem', { projectId: proj.projectId, grupo: 'Diseño', fila: 'Luis', titulo: 'Plataforma',
+    fechaInicio: '2026-10-12', fechaFin: '2026-10-25' });
+  doc.getElementById('gt-refresh').click();
+  await flush(20);
+  const rowLabels = () => [...doc.querySelectorAll('.gt-rlabel')].map(r => r.textContent);
+  const totalRows = rowLabels().length;
+  check('hay varias filas antes de filtrar', totalRows >= 3, rowLabels().join(','));
+  check('el botón Acciones sin filtro no muestra contador', doc.getElementById('gt-filter').textContent.indexOf('(') === -1);
+
+  doc.getElementById('gt-filter').click();
+  await flush();
+  const pop = doc.getElementById('gt-pop');
+  check('el filtro abre un panel con una casilla por fila y por grupo',
+    !!pop && pop.querySelectorAll('.gt-pop-r input').length === totalRows && pop.querySelectorAll('.gt-pop-g input').length >= 2);
+  const firstRow = pop.querySelector('.gt-pop-r input');
+  const hiddenName = firstRow.parentElement.querySelector('span').textContent;
+  firstRow.checked = false;
+  firstRow.dispatchEvent(new window.Event('change', { bubbles: true }));
+  await flush();
+  check('desmarcar una acción la oculta del Gantt',
+    rowLabels().length === totalRows - 1 && rowLabels().indexOf(hiddenName) === -1, rowLabels().join(','));
+  check('el botón muestra cuántas acciones se ven', /\(\d+\/\d+\)/.test(doc.getElementById('gt-filter').textContent),
+    doc.getElementById('gt-filter').textContent);
+  check('el panel sigue abierto tras filtrar', !!doc.getElementById('gt-pop'));
+
+  const gChecks = [...doc.getElementById('gt-pop').querySelectorAll('.gt-pop-g input')];
+  const gCheck = gChecks[gChecks.length - 1];   // último grupo (conserva visible la fila ya filtrada del primero)
+  const gName = gCheck.getAttribute('data-g');
+  const gRows = [...doc.getElementById('gt-pop').querySelectorAll('.gt-pop-r input')]
+    .filter(i => i.getAttribute('data-g') === gName).map(i => i.getAttribute('data-f'));
+  gCheck.checked = false;
+  gCheck.dispatchEvent(new window.Event('change', { bubbles: true }));
+  await flush();
+  check('desmarcar un grupo oculta todas sus filas',
+    gRows.length > 0 && gRows.every(f => rowLabels().indexOf(f) === -1), gName + ': ' + rowLabels().join(','));
+
+  doc.getElementById('gt-pop').querySelector('[data-all="0"]').click();
+  await flush();
+  check('"Ninguna" oculta todo y se ofrece mostrar todas', !!doc.getElementById('gt-show-all') && rowLabels().length === 0);
+  doc.getElementById('gt-pop').querySelector('[data-all="1"]').click();
+  await flush();
+  check('"Todas" vuelve a mostrar todas las filas', rowLabels().length === totalRows);
+
+  // Persistencia del filtro por proyecto
+  const again = doc.getElementById('gt-pop').querySelector('.gt-pop-r input');
+  const hidGrupo = again.getAttribute('data-g'), hidFila = again.getAttribute('data-f');
+  again.checked = false;
+  again.dispatchEvent(new window.Event('change', { bubbles: true }));
+  await flush();
+  doc.getElementById('gt-refresh').click();
+  await flush(20);
+  check('el filtro se recuerda al recargar la vista', rowLabels().length === totalRows - 1);
+
+  doc.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true }));
+  await flush();
+  check('un clic fuera cierra el panel', !doc.getElementById('gt-pop'));
+
+  // Crear una actividad en una fila oculta la vuelve visible
+  check('la fila filtrada sigue oculta', rowLabels().indexOf(hidFila) === -1);
+  doc.getElementById('gt-new').click();
+  await flush();
+  const gm3 = doc.querySelector('.overlay');
+  gm3.querySelector('[name="titulo"]').value = 'Nueva en fila oculta';
+  gm3.querySelector('[name="grupo"]').value = hidGrupo;
+  gm3.querySelector('[name="fila"]').value = hidFila;
+  gm3.querySelector('[data-act="save"]').click();
+  await flush(20);
+  check('crear una actividad en una fila oculta la hace visible', rowLabels().indexOf(hidFila) !== -1, rowLabels().join(','));
+  // Mostrar todo para no afectar las pruebas siguientes
+  doc.getElementById('gt-filter').click();
+  await flush();
+  doc.getElementById('gt-pop').querySelector('[data-all="1"]').click();
+  await flush();
+  doc.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true }));
+  await flush();
+  check('al mostrar todas vuelven todas las filas', rowLabels().length === totalRows);
 
   // Acceso directo desde la tarjeta del proyecto
   doc.querySelector('.nav-item[data-route="projects"]').click();
