@@ -400,6 +400,28 @@ const ganttAudit = ok(call('getAuditLog', { entidad: 'GANTT' }), 'el ADMIN consu
 check('las operaciones del Gantt quedan auditadas',
   ganttAudit && (ganttAudit.rows || ganttAudit).length >= 5, JSON.stringify(ganttAudit).slice(0, 120));
 
+console.log('\n── 11c. Carga de hitos Nobarzo ─────────────────────────────');
+as(ownerEmail);
+const nob = ok(call('createProject', { nombre: 'Nobarzo ERP', fechaInicio: '2026-10-26', fechaFin: '2027-01-29' }),
+  'se crea un proyecto Nobarzo');
+as(ownerEmail);
+let seedMsg = null;
+try { seedMsg = call('seedNobarzoGantt'); check('seedNobarzoGantt() se ejecuta', true); }
+catch (e) { check('seedNobarzoGantt() se ejecuta', false, e.message); }
+as(ownerEmail);
+const nobItems = ok(call('getGantt', nob.projectId), 'el Gantt de Nobarzo se lee').items;
+check('se cargaron los 19 hitos', nobItems.length === 19, 'items: ' + nobItems.length + ' · ' + seedMsg);
+check('las fechas de los hitos son válidas y ordenadas',
+  nobItems.every(i => /^\d{4}-\d{2}-\d{2}$/.test(i.fechaInicio) && i.fechaFin >= i.fechaInicio));
+check('los hitos de la misma fila comparten orden', (() => {
+  const m = {}; return nobItems.every(i => { const k = i.grupo + '|' + i.fila; m[k] = m[k] === undefined ? i.orden : m[k]; return m[k] === i.orden; });
+})());
+as(ownerEmail);
+call('seedNobarzoGantt');
+as(ownerEmail);
+check('es idempotente: ejecutarla de nuevo no duplica',
+  call('getGantt', nob.projectId).data.items.length === 19);
+
 console.log('\n── 12. Rendimiento de acceso a la hoja ─────────────────────');
 Object.values(store.spreadsheets).forEach(s => s.getSheets().forEach(sh => { sh.reads = 0; sh.writes = 0; }));
 as('ana@example.com');
