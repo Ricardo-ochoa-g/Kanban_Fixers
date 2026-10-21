@@ -512,6 +512,69 @@ function boot(env, getEmail) {
   await flush();
   check('al mostrar todas vuelven todas las filas', rowLabels().length === totalRows);
 
+  // Barra de rango de fechas
+  const colCount = () => doc.querySelectorAll('.gt-lowrow .gt-lc').length;
+  const barCount = () => doc.querySelectorAll('.gt-bar').length;
+  const winEl = () => doc.getElementById('gt-rwin');
+  check('se muestra la barra de rango con dos bordes y el botón "Ver todo" deshabilitado',
+    !!winEl() && winEl().querySelectorAll('.gt-rh').length === 2 && doc.getElementById('gt-r-reset').disabled);
+  const cols0 = colCount(), bars0 = barCount(), first0 = lowLabels()[0];
+  const fromTxt0 = doc.getElementById('gt-r-from').textContent, toTxt0 = doc.getElementById('gt-r-to').textContent;
+  check('las etiquetas muestran las fechas del rango completo', /\d{4}/.test(fromTxt0) && /\d{4}/.test(toTxt0), fromTxt0 + ' → ' + toTxt0);
+
+  // Borde derecho hacia la izquierda: menos columnas
+  let rh = winEl().querySelector('.gt-rh.r');
+  fire(rh, 'pointerdown', 1000, 0);
+  fire(winEl(), 'pointermove', 500, 0);
+  fire(winEl(), 'pointerup', 500, 0);
+  await flush(20);
+  check('mover el borde derecho de la barra reduce las columnas visibles', colCount() < cols0, cols0 + ' → ' + colCount());
+  check('el rango en pantalla cambia su fecha final', doc.getElementById('gt-r-to').textContent !== toTxt0);
+  check('"Ver todo" se habilita al filtrar', !doc.getElementById('gt-r-reset').disabled);
+  check('las cajitas fuera del rango dejan de dibujarse', barCount() <= bars0, bars0 + ' → ' + barCount());
+  const colsR = colCount(), toTxt1 = doc.getElementById('gt-r-to').textContent;
+
+  // Desplazar la ventana completa hacia la derecha
+  const fromTxt1 = doc.getElementById('gt-r-from').textContent;
+  fire(winEl(), 'pointerdown', 300, 0);
+  fire(winEl(), 'pointermove', 400, 0);
+  fire(winEl(), 'pointerup', 400, 0);
+  await flush(20);
+  check('arrastrar el centro desplaza el rango sin cambiar su ancho',
+    doc.getElementById('gt-r-from').textContent !== fromTxt1 && doc.getElementById('gt-r-to').textContent !== toTxt1);
+  check('tras desplazar siguen dibujándose columnas', colCount() >= 1);
+
+  // Teclado en el borde izquierdo
+  const fromBeforeKey = doc.getElementById('gt-r-from').textContent;
+  winEl().querySelector('.gt-rh.l').dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowRight', shiftKey: true, bubbles: true, cancelable: true }));
+  await flush(20);
+  check('las flechas del teclado mueven el borde (Mayús = 7 días)',
+    doc.getElementById('gt-r-from').textContent !== fromBeforeKey);
+
+  // Cambiar de escala conserva el rango
+  await setScale('week');
+  check('cambiar de escala conserva el filtro de fechas', !doc.getElementById('gt-r-reset').disabled);
+  await setScale('month');
+
+  // Restablecer
+  doc.getElementById('gt-r-reset').click();
+  await flush(20);
+  check('"Ver todo" restablece las columnas y las etiquetas',
+    colCount() === cols0 && doc.getElementById('gt-r-from').textContent === fromTxt0 && doc.getElementById('gt-r-reset').disabled,
+    colCount() + ' vs ' + cols0);
+  check('tras restablecer se dibujan todas las cajitas', barCount() === bars0);
+
+  // El borde izquierdo no pasa del derecho
+  fire(winEl().querySelector('.gt-rh.l'), 'pointerdown', 0, 0);
+  fire(winEl(), 'pointermove', 5000, 0);
+  fire(winEl(), 'pointerup', 5000, 0);
+  await flush(20);
+  const fT = doc.getElementById('gt-r-from').textContent, tT = doc.getElementById('gt-r-to').textContent;
+  check('el borde izquierdo nunca cruza al derecho: queda al menos una columna y un rango válido',
+    colCount() >= 1 && !!winEl() && !!fT && !!tT, fT + ' / ' + tT);
+  doc.getElementById('gt-r-reset').click();
+  await flush(20);
+
   // Acceso directo desde la tarjeta del proyecto
   doc.querySelector('.nav-item[data-route="projects"]').click();
   await flush(20);

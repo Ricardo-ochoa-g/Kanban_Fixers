@@ -12,7 +12,7 @@
    ========================================================================== */
 
 var Gantt = { data: null, projectId: null, scale: 'month', geo: null, drag: null, tip: null,
-  hidden: {}, pop: null };
+  hidden: {}, pop: null, win: null, winProject: null, rdrag: null, raf: null };
 
 var GT_SCALES = [
   { v: 'day',       label: 'Día',          ppd: 44,  minCols: 14, defLen: 3 },
@@ -106,7 +106,7 @@ function gtScaleDef(v) {
  * (actividades y proyecto) hasta una columna más allá de la más tardía, con un
  * mínimo de columnas. La columna extra deja espacio para extender hacia la derecha.
  */
-function gtBuildGeo(data, sc) {
+function gtBuildGeo(data, sc, win) {
   var days = [];
   data.items.forEach(function (i) { days.push(gtDay(i.fechaInicio), gtDay(i.fechaFin)); });
   if (data.project) days.push(gtDay(data.project.fechaInicio), gtDay(data.project.fechaFin));
@@ -114,15 +114,20 @@ function gtBuildGeo(data, sc) {
   if (!days.length) days = [gtToday()];
   var min = Math.min.apply(null, days), max = Math.max.apply(null, days);
 
+  // Con una ventana de fechas activa, las columnas cubren solo ese rango.
+  if (win) { min = win.from; max = win.to; }
+
   var cols = [], cur = gtUnitStart(sc.v, min), guard = 0;
   while (guard++ < 3000) {
     var next = gtUnitNext(sc.v, cur);
     cols.push({ start: cur, end: next });
-    if (cols.length >= sc.minCols && next > max) break;
+    if (win ? next > max : (cols.length >= sc.minCols && next > max)) break;
     cur = next;
   }
-  var last = cols[cols.length - 1];
-  cols.push({ start: last.end, end: gtUnitNext(sc.v, last.end) });
+  if (!win) {
+    var last = cols[cols.length - 1];
+    cols.push({ start: last.end, end: gtUnitNext(sc.v, last.end) });
+  }
 
   var upper = [];
   cols.forEach(function (c) {
@@ -134,11 +139,29 @@ function gtBuildGeo(data, sc) {
 
   var rs = cols[0].start, re = cols[cols.length - 1].end;
   return { sc: sc, ppd: sc.ppd, rs: rs, re: re, cols: cols, upper: upper,
-    totalW: Math.round((re - rs) * sc.ppd), firstItemDay: days.length ? Math.min.apply(null, days) : rs };
+    totalW: Math.round((re - rs) * sc.ppd), firstItemDay: win ? rs : Math.min.apply(null, days) };
 }
 
 function gtX(geo, day) { return (day - geo.rs) * geo.ppd; }
 function gtBarW(geo, d0, d1) { return Math.max((d1 - d0 + 1) * geo.ppd, GT_MIN_BAR_W); }
+
+/** Posición de una cajita recortada al rango visible (puede ser parcial u ocultarse). */
+function gtBarGeom(geo, d0, d1) {
+  var x0 = gtX(geo, d0), w = gtBarW(geo, d0, d1), clipL = false, clipR = false;
+  if (x0 < 0) { w += x0; x0 = 0; clipL = true; }
+  if (x0 + w > geo.totalW) { w = geo.totalW - x0; clipR = true; }
+  return { left: Math.round(x0), width: Math.round(w), clipL: clipL, clipR: clipR,
+    hidden: w <= 0 || x0 >= geo.totalW };
+}
+
+function gtApplyBar(bar, geo, d0, d1) {
+  var g = gtBarGeom(geo, d0, d1);
+  bar.style.left = g.left + 'px';
+  bar.style.width = Math.max(0, g.width) + 'px';
+  bar.style.display = g.hidden ? 'none' : '';
+  bar.classList.toggle('clip-l', g.clipL);
+  bar.classList.toggle('clip-r', g.clipR);
+}
 
 /* ───────────────────────────── Agrupación en filas ─────────────────────── */
 
@@ -209,6 +232,7 @@ App.registerView('gantt', {
     Gantt.projectId = App.state.currentProjectId;
     gtCloseFilter();
     gtLoadHidden();
+    if (Gantt.winProject !== Gantt.projectId) { Gantt.win = null; Gantt.winProject = Gantt.projectId; }
 
     try {
       const saved = window.localStorage && localStorage.getItem('kw-gantt-scale');
@@ -218,6 +242,7 @@ App.registerView('gantt', {
     gtHeader();
     view.innerHTML =
       '<p class="gt-hint" id="gt-hint"></p>' +
+      '<div id="gt-range"></div>' +
       '<div id="gt-host">' + UI.skeleton(2) + '</div>';
     return gtLoad();
   }
@@ -313,6 +338,15 @@ function gtRender(scrollToWork) {
       : 'Vista de solo lectura.';
   }
   gtHeader(data.project.nombre);
+  gtRenderRange();
+  gtRenderBoard(scrollToWork);
+}
+
+/** @param {boolean|string} mode true = ir a la primera actividad; 'left' = al inicio; otro = conservar scroll. */
+function gtRenderBoard(mode) {
+  const host = document.getElementById('gt-host');
+  const data = Gantt.data;
+  if (!host || !data) return;
 
   if (!data.items.length) {
     host.innerHTML = UI.empty('&#128197;', 'Este proyecto aún no tiene actividades',
@@ -324,7 +358,7 @@ function gtRender(scrollToWork) {
   const prevTop = host.firstChild && host.firstChild.scrollTop || 0;
 
   const sc = gtScaleDef(Gantt.scale);
-  const geo = Gantt.geo = gtBuildGeo(data, sc);   // el rango no depende del filtro: las columnas no se mueven
+  const geo = Gantt.geo = gtBuildGeo(data, sc, Gantt.win ? gtWindow() : null);   // el filtro de acciones no mueve las columnas
   const visible = data.items.filter(i => !Gantt.hidden[gtRowKey(i.grupo, i.fila)]);
   if (!visible.length) {
     host.innerHTML = UI.empty('&#128065;', 'Todas las acciones están ocultas',
@@ -370,8 +404,10 @@ function gtRender(scrollToWork) {
     '<div class="gt-body">' + lines + body + '</div></div></div>';
 
   const wrap = document.getElementById('gt-wrap');
-  if (scrollToWork) {
+  if (mode === true) {
     wrap.scrollLeft = Math.max(0, gtX(geo, geo.firstItemDay) - 40);
+  } else if (mode === 'left') {
+    wrap.scrollLeft = 0; wrap.scrollTop = prevTop;
   } else {
     wrap.scrollLeft = prevLeft; wrap.scrollTop = prevTop;
   }
@@ -382,8 +418,10 @@ function gtRowHtml(row, geo) {
   const g = 'gc-' + (gtHash(row.grupo) % GT_COLORS);
   const bars = row.items.map(it => {
     const d0 = gtDay(it.fechaInicio), d1 = gtDay(it.fechaFin);
-    return '<div class="gt-bar ' + g + '" data-id="' + UI.esc(it.ganttId) + '" style="left:' +
-      Math.round(gtX(geo, d0)) + 'px;width:' + Math.round(gtBarW(geo, d0, d1)) + 'px;top:' +
+    const bg = gtBarGeom(geo, d0, d1);
+    if (bg.hidden) return '';
+    return '<div class="gt-bar ' + g + (bg.clipL ? ' clip-l' : '') + (bg.clipR ? ' clip-r' : '') +
+      '" data-id="' + UI.esc(it.ganttId) + '" style="left:' + bg.left + 'px;width:' + bg.width + 'px;top:' +
       Math.round(row.padTop + it._lane * (GT_BAR_H + GT_BAR_GAP)) + 'px" title="' +
       UI.esc(it.titulo + ' · ' + gtLong(it.fechaInicio) + ' → ' + gtLong(it.fechaFin)) + '">' +
       '<span class="h l" data-h="l"></span><span class="t">' + UI.esc(it.titulo) + '</span>' +
@@ -431,19 +469,19 @@ function gtMove(e) {
   if (!st.moved) { st.moved = true; st.bar.classList.add('dragging'); }
 
   const dd = Math.round(dx / geo.ppd);
-  const minDay = geo.rs, maxDay = geo.re - 1;
+  // Límites: el rango visible, ampliado por lo que la cajita ya ocupaba fuera de él.
+  const lowDay = Math.min(geo.rs, st.d0), highDay = Math.max(geo.re - 1, st.d1);
   if (st.mode === 'move') {
     const len = st.d1 - st.d0;
-    st.nd0 = Math.max(minDay, Math.min(maxDay - len, st.d0 + dd));
+    st.nd0 = Math.max(lowDay, Math.min(highDay - len, st.d0 + dd));
     st.nd1 = st.nd0 + len;
   } else if (st.mode === 'l') {
-    st.nd0 = Math.max(minDay, Math.min(st.d1, st.d0 + dd)); st.nd1 = st.d1;
+    st.nd0 = Math.max(lowDay, Math.min(st.d1, st.d0 + dd)); st.nd1 = st.d1;
   } else {
-    st.nd1 = Math.min(maxDay, Math.max(st.d0, st.d1 + dd)); st.nd0 = st.d0;
+    st.nd1 = Math.min(highDay, Math.max(st.d0, st.d1 + dd)); st.nd0 = st.d0;
   }
 
-  st.bar.style.left = Math.round(gtX(geo, st.nd0)) + 'px';
-  st.bar.style.width = Math.round(gtBarW(geo, st.nd0, st.nd1)) + 'px';
+  gtApplyBar(st.bar, geo, st.nd0, st.nd1);
 
   if (st.mode === 'move') {
     st.bar.style.transform = 'translateY(' + dy + 'px)';
@@ -520,6 +558,156 @@ function gtUp() {
       App.handleError(err);
       gtLoad().catch(App.handleError);   // nunca dejar en pantalla algo que no está guardado
     });
+}
+
+/* ───────────────────────────── Rango de fechas ─────────────────────────── */
+
+/** Dominio completo (todas las actividades y el plazo del proyecto) en días. */
+function gtDomain() {
+  const data = Gantt.data;
+  let days = [];
+  data.items.forEach(i => { days.push(gtDay(i.fechaInicio), gtDay(i.fechaFin)); });
+  if (data.project) days.push(gtDay(data.project.fechaInicio), gtDay(data.project.fechaFin));
+  days = days.filter(d => d !== null);
+  if (!days.length) days = [gtToday()];
+  const min = Math.min.apply(null, days), max = Math.max.apply(null, days);
+  return { min: min, max: Math.max(max, min + 1) };
+}
+
+/** Ventana efectiva: la elegida (acotada al dominio) o el dominio completo. */
+function gtWindow() {
+  const dom = gtDomain(), w = Gantt.win;
+  if (!w) return { from: dom.min, to: dom.max, dom: dom };
+  const from = Math.max(dom.min, Math.min(w.from, dom.max - 1));
+  const to = Math.min(dom.max, Math.max(w.to, from));
+  return { from: from, to: to, dom: dom };
+}
+
+function gtSetWindow(from, to) {
+  const dom = gtDomain();
+  from = Math.max(dom.min, Math.min(from, dom.max));
+  to = Math.max(from, Math.min(to, dom.max));
+  Gantt.win = (from <= dom.min && to >= dom.max) ? null : { from: from, to: to };
+}
+
+function gtRenderRange() {
+  const host = document.getElementById('gt-range');
+  if (!host) return;
+  if (!Gantt.data || !Gantt.data.items.length) { host.innerHTML = ''; return; }
+
+  const w = gtWindow(), span = w.dom.max - w.dom.min, today = gtToday();
+  const pct = d => ((d - w.dom.min) / span * 100).toFixed(3);
+
+  let marks = '';
+  Gantt.data.items.slice(0, 150).forEach(i => {
+    const a = gtDay(i.fechaInicio), b = gtDay(i.fechaFin);
+    if (a === null || b === null) return;
+    marks += '<i class="gt-rmark" style="left:' + pct(a) + '%;width:' + Math.max(0.4, (b - a) / span * 100).toFixed(3) + '%"></i>';
+  });
+
+  host.innerHTML =
+    '<div class="gt-range" title="Dominio completo: ' + UI.esc(gtLong(gtIso(w.dom.min)) + ' → ' + gtLong(gtIso(w.dom.max))) + '">' +
+      '<span class="gt-rl" id="gt-r-from"></span>' +
+      '<div class="gt-rtrack" id="gt-rtrack">' + marks +
+        (today >= w.dom.min && today <= w.dom.max ? '<i class="gt-rtoday" style="left:' + pct(today) + '%"></i>' : '') +
+        '<div class="gt-rwin" id="gt-rwin" title="Arrastra para desplazar el rango">' +
+          '<span class="gt-rh l" data-rh="l" role="slider" tabindex="0" aria-label="Inicio del rango"></span>' +
+          '<span class="gt-rh r" data-rh="r" role="slider" tabindex="0" aria-label="Fin del rango"></span>' +
+        '</div>' +
+      '</div>' +
+      '<span class="gt-rl gt-rl-r" id="gt-r-to"></span>' +
+      '<button class="btn btn-sm btn-ghost" id="gt-r-reset">Ver todo</button>' +
+    '</div>';
+
+  gtUpdateRange();
+  const win = document.getElementById('gt-rwin');
+  win.addEventListener('pointerdown', gtRangeDown);
+  win.querySelectorAll('.gt-rh').forEach(h => h.addEventListener('keydown', gtRangeKey));
+  document.getElementById('gt-r-reset').addEventListener('click', () => {
+    Gantt.win = null;
+    gtRenderRange();
+    gtRenderBoard('left');
+  });
+}
+
+/** Actualiza posición, etiquetas y botón sin reconstruir la barra (se usa mientras se arrastra). */
+function gtUpdateRange() {
+  const win = document.getElementById('gt-rwin');
+  if (!win) return;
+  const w = gtWindow(), span = w.dom.max - w.dom.min;
+  win.style.left = ((w.from - w.dom.min) / span * 100) + '%';
+  win.style.width = ((w.to - w.from) / span * 100) + '%';
+  document.getElementById('gt-r-from').textContent = gtLong(gtIso(w.from));
+  document.getElementById('gt-r-to').textContent = gtLong(gtIso(w.to));
+  document.getElementById('gt-r-reset').disabled = !Gantt.win;
+  win.querySelector('.gt-rh.l').setAttribute('aria-valuetext', gtLong(gtIso(w.from)));
+  win.querySelector('.gt-rh.r').setAttribute('aria-valuetext', gtLong(gtIso(w.to)));
+}
+
+/** Re-dibuja el tablero a lo sumo una vez por cuadro mientras se arrastra la barra. */
+function gtScheduleBoard() {
+  if (Gantt.raf) return;
+  const run = () => { Gantt.raf = null; gtRenderBoard('left'); };
+  Gantt.raf = (window.requestAnimationFrame || (f => setTimeout(f, 16)))(run);
+}
+
+function gtRangeDown(e) {
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  const el = e.currentTarget, h = e.target.getAttribute ? e.target.getAttribute('data-rh') : null;
+  const w = gtWindow(), track = document.getElementById('gt-rtrack');
+  Gantt.rdrag = {
+    mode: h || 'pan', x0: e.clientX, from: w.from, to: w.to, dom: w.dom,
+    tw: (track && track.getBoundingClientRect().width) || 1000
+  };
+  if (el.setPointerCapture && e.pointerId !== undefined) {
+    try { el.setPointerCapture(e.pointerId); } catch (err) { /* noop */ }
+  }
+  el.addEventListener('pointermove', gtRangeMove);
+  el.addEventListener('pointerup', gtRangeUp);
+  el.addEventListener('pointercancel', gtRangeUp);
+  e.preventDefault();
+}
+
+function gtRangeMove(e) {
+  const d = Gantt.rdrag;
+  if (!d) return;
+  const span = d.dom.max - d.dom.min;
+  const dd = Math.round((e.clientX - d.x0) / d.tw * span);
+  let from = d.from, to = d.to;
+  if (d.mode === 'pan') {
+    const len = to - from;
+    from = Math.max(d.dom.min, Math.min(d.dom.max - len, from + dd));
+    to = from + len;
+  } else if (d.mode === 'l') {
+    from = Math.max(d.dom.min, Math.min(to, from + dd));
+  } else {
+    to = Math.min(d.dom.max, Math.max(from, to + dd));
+  }
+  gtSetWindow(from, to);
+  gtUpdateRange();
+  gtScheduleBoard();
+}
+
+function gtRangeUp(e) {
+  const el = e.currentTarget;
+  el.removeEventListener('pointermove', gtRangeMove);
+  el.removeEventListener('pointerup', gtRangeUp);
+  el.removeEventListener('pointercancel', gtRangeUp);
+  Gantt.rdrag = null;
+  gtRenderRange();          // refleja el estado final (p. ej. "Ver todo" habilitado)
+  gtRenderBoard('left');
+}
+
+/** Teclado: flechas mueven el borde 1 día (Mayús = 7 días). */
+function gtRangeKey(e) {
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  const step = (e.key === 'ArrowRight' ? 1 : -1) * (e.shiftKey ? 7 : 1);
+  const w = gtWindow(), side = e.currentTarget.getAttribute('data-rh');
+  if (side === 'l') gtSetWindow(Math.min(w.from + step, w.to), w.to);
+  else gtSetWindow(w.from, Math.max(w.to + step, w.from));
+  e.preventDefault();
+  gtUpdateRange();
+  gtScheduleBoard();
 }
 
 /* ───────────────────────────── Filtro de acciones ──────────────────────── */
