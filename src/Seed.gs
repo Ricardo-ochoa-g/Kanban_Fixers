@@ -127,43 +127,49 @@ const SEED_TAREAS_REUNION = [
 ];
 
 /**
- * Crea las tareas de SEED_TAREAS_REUNION en los proyectos Nobarzo y Q4 Ingenieros:
+ * Crea las tareas de SEED_TAREAS_REUNION en el proyecto "Nobarzo y Q4 Ingenieros":
  * BACKLOG, prioridad ALTA, sin responsable, del 20 al 23 de octubre de 2026.
- * Idempotente: no repite una tarea con el mismo título en el mismo proyecto.
+ * Idempotente: no repite una tarea con el mismo título en el proyecto.
  * Se ejecuta desde el editor (usa la identidad de quien ejecuta, que debe ser ADMIN o tener acceso).
+ *
+ * @param {string=} projectId Solo si el nombre no basta para identificar el proyecto.
  */
-function seedTareasReunion() {
+function seedTareasReunion(projectId) {
   const user = requireUser_();
   const projects = tProjects_().active();
-  const targets = [/no[bv]arzo/i, /q4/i].map(re => {
-    const m = projects.filter(p => re.test(p.nombre));
+  const names = () => projects.map(p => p.nombre).join(', ');
+
+  let project = null;
+  if (projectId) {
+    project = projects.filter(p => p.projectId === projectId)[0] || null;
+    if (!project) throw new Error('No hay un proyecto activo con id ' + projectId + '. Proyectos activos: ' + names());
+  } else {
+    let m = projects.filter(p => /no[bv]arzo/i.test(p.nombre));
+    if (m.length > 1) m = m.filter(p => /q4/i.test(p.nombre));   // "Nobarzo y Q4 Ingenieros"
     if (m.length !== 1) {
-      throw new Error((m.length ? 'Hay varios proyectos que coinciden con ' : 'No se encontró un proyecto que coincida con ') +
-        re + (m.length ? ': ' + m.map(p => p.nombre).join(', ') : '') +
-        '. Proyectos activos: ' + projects.map(p => p.nombre).join(', '));
+      throw new Error((m.length ? 'Hay varios proyectos que coinciden: ' + m.map(p => p.nombre + ' (' + p.projectId + ')').join(', ') +
+          '. Ejecuta seedTareasReunion("<projectId>").'
+        : 'No se encontró el proyecto Nobarzo y Q4 Ingenieros. Proyectos activos: ' + names()));
     }
-    return m[0];
+    project = m[0];
+  }
+
+  const have = {};
+  tTasks_().all().filter(t => t.activo && t.projectId === project.projectId)
+    .forEach(t => { have[t.titulo] = true; });
+  let added = 0;
+  SEED_TAREAS_REUNION.forEach(t => {
+    if (have[t[0]]) return;
+    Tasks_create_(user, {
+      projectId: project.projectId, titulo: t[0], descripcion: t[1],
+      estado: STATUS.BACKLOG, prioridad: PRIORITY.ALTA, responsable: '',
+      fechaInicio: '2026-10-20', fechaVencimiento: '2026-10-23'
+    });
+    added++;
   });
 
-  const lines = [];
-  targets.forEach(project => {
-    const have = {};
-    tTasks_().all().filter(t => t.activo && t.projectId === project.projectId)
-      .forEach(t => { have[t.titulo] = true; });
-    let added = 0;
-    SEED_TAREAS_REUNION.forEach(t => {
-      if (have[t[0]]) return;
-      Tasks_create_(user, {
-        projectId: project.projectId, titulo: t[0], descripcion: t[1],
-        estado: STATUS.BACKLOG, prioridad: PRIORITY.ALTA, responsable: '',
-        fechaInicio: '2026-10-20', fechaVencimiento: '2026-10-23'
-      });
-      added++;
-    });
-    lines.push('"' + project.nombre + '": ' + added + ' tareas creadas, ' +
-      (SEED_TAREAS_REUNION.length - added) + ' ya existían.');
-  });
-  const msg = lines.join('\n');
+  const msg = 'Proyecto "' + project.nombre + '": ' + added + ' tareas creadas, ' +
+    (SEED_TAREAS_REUNION.length - added) + ' ya existían.';
   Logger.log(msg);
   return msg;
 }

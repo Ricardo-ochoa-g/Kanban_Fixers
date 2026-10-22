@@ -424,26 +424,24 @@ check('es idempotente: ejecutarla de nuevo no duplica',
 
 console.log('\n── 11d. Carga de tareas de la reunión ──────────────────────');
 as(ownerEmail);
-const q4 = ok(call('createProject', { nombre: 'Q4 Ingenieros' }), 'se crea un proyecto Q4 Ingenieros');
+const nq4 = ok(call('createProject', { nombre: 'Nobarzo y Q4 Ingenieros' }), 'se crea el proyecto "Nobarzo y Q4 Ingenieros"');
 as(ownerEmail);
 let seedT = null;
-try { seedT = call('seedTareasReunion'); check('seedTareasReunion() se ejecuta', true); }
-catch (e) { check('seedTareasReunion() se ejecuta', false, e.message); }
-[nob, q4].forEach(pr => {
-  as(ownerEmail);
-  const tareas = (ok(call('getTasks', pr.projectId, {}), 'se leen las tareas de ' + pr.nombre) || [])
-    .filter(t => /Gantt|kickoff|contrato|Drive|captación|mejora continua|Plan de trabajo/i.test(t.titulo));
-  check(pr.nombre + ': 8 tareas creadas', tareas.length === 8, 'tareas: ' + tareas.length + ' · ' + seedT);
-  check(pr.nombre + ': todas en BACKLOG con prioridad ALTA y sin responsable',
-    tareas.every(t => t.estado === 'BACKLOG' && t.prioridad === 'ALTA' && !t.responsable));
-  check(pr.nombre + ': fechas 20-10-2026 a 23-10-2026',
-    tareas.every(t => t.fechaInicio === '2026-10-20' && t.fechaVencimiento === '2026-10-23'));
-});
+try { seedT = call('seedTareasReunion'); check('seedTareasReunion() se ejecuta (hay otro proyecto Nobarzo y se desambigua)', true); }
+catch (e) { check('seedTareasReunion() se ejecuta (hay otro proyecto Nobarzo y se desambigua)', false, e.message); }
+as(ownerEmail);
+const tareasR = ok(call('getTasks', nq4.projectId, {}), 'se leen las tareas del proyecto') || [];
+check('se crearon 8 tareas', tareasR.length === 8, 'tareas: ' + tareasR.length + ' · ' + seedT);
+check('todas en BACKLOG con prioridad ALTA y sin responsable',
+  tareasR.every(t => t.estado === 'BACKLOG' && t.prioridad === 'ALTA' && !t.responsable));
+check('fechas 20-10-2026 a 23-10-2026',
+  tareasR.every(t => t.fechaInicio === '2026-10-20' && t.fechaVencimiento === '2026-10-23'));
+as(ownerEmail);
+check('no se crearon tareas en el otro proyecto Nobarzo', call('getTasks', nob.projectId, {}).data.length === 0);
 as(ownerEmail);
 call('seedTareasReunion');
 as(ownerEmail);
-check('es idempotente: ejecutarla otra vez no duplica',
-  call('getTasks', q4.projectId, {}).data.length === 8);
+check('es idempotente: ejecutarla otra vez no duplica', call('getTasks', nq4.projectId, {}).data.length === 8);
 
 console.log('\n── 12. Rendimiento de acceso a la hoja ─────────────────────');
 Object.values(store.spreadsheets).forEach(s => s.getSheets().forEach(sh => { sh.reads = 0; sh.writes = 0; }));
