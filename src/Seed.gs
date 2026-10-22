@@ -97,3 +97,73 @@ function seedNobarzoGantt(projectId) {
     return msg;
   });
 }
+
+/* ───────────────────── Tareas de la reunión del 21-oct ───────────────────── */
+
+/** [título, descripción] — acuerdos de la reunión de Ricardo y Alberto. */
+const SEED_TAREAS_REUNION = [
+  ['Cerrar la Gantt y preparar la presentación de kickoff (PPT + PDF)',
+    'Se revisó la Gantt: la vista semanal se entiende mejor, pero falta acortar algunos rangos de tiempo. ' +
+    'Primero se cierra la Gantt y después se prepara la presentación de kickoff en PPT, con versión en PDF.'],
+  ['Reunión Ricardo–Alberto (jue 22) para cerrar la Gantt',
+    'Alberto revisará la Gantt antes y enviará sus comentarios; Ricardo ajustará lo necesario.'],
+  ['Fijar fecha del kickoff con Gaby',
+    'Gaby vuelve de licencia el lunes 26. Alberto ajustó en Kanban el plazo para fijar la reunión al 27. ' +
+    'Se espera que el kickoff ocurra esa semana, idealmente el jueves 29. Aún no hay fecha confirmada con Gaby.'],
+  ['Plan de trabajo: explicar frecuencia de reuniones e informes de avance',
+    'La presentación debe explicar la frecuencia de reuniones y los informes de avance. Propuesta: informar avances los viernes ' +
+    'y validar los hitos con el dueño del proyecto (o alguien con autoridad) para evitar cambios importantes al final.'],
+  ['Aclarar desde el kickoff el alcance de la mejora continua',
+    'Cubriría infraestructura, arquitectura tecnológica y ajustes menores o bugs. Un módulo nuevo sería otro proyecto ' +
+    'y tendría un valor adicional.'],
+  ['Definir contrato y forma de cobro',
+    'Averiguar si corresponde un contrato de prestación de servicios o bastan facturas, y cómo facturar los períodos ' +
+    '(Alberto consultará con su hermano u otro contacto). Evaluar cambiar el pago adelantado por pago al final de cada período.'],
+  ['Crear un Drive para reunir transcripciones y archivos',
+    'Alberto creará un Drive donde reunir las transcripciones de las reuniones y los archivos del proyecto.'],
+  ['Crear proyecto paralelo en Kanban para captación de clientes y presencia digital',
+    'Ricardo creará el proyecto. Idea: probar contenido semiautomatizado para LinkedIn o Instagram, empezando por ' +
+    'publicaciones, imágenes y carruseles.']
+];
+
+/**
+ * Crea las tareas de SEED_TAREAS_REUNION en los proyectos Nobarzo y Q4 Ingenieros:
+ * BACKLOG, prioridad ALTA, sin responsable, del 20 al 23 de octubre de 2026.
+ * Idempotente: no repite una tarea con el mismo título en el mismo proyecto.
+ * Se ejecuta desde el editor (usa la identidad de quien ejecuta, que debe ser ADMIN o tener acceso).
+ */
+function seedTareasReunion() {
+  const user = requireUser_();
+  const projects = tProjects_().active();
+  const targets = [/no[bv]arzo/i, /q4/i].map(re => {
+    const m = projects.filter(p => re.test(p.nombre));
+    if (m.length !== 1) {
+      throw new Error((m.length ? 'Hay varios proyectos que coinciden con ' : 'No se encontró un proyecto que coincida con ') +
+        re + (m.length ? ': ' + m.map(p => p.nombre).join(', ') : '') +
+        '. Proyectos activos: ' + projects.map(p => p.nombre).join(', '));
+    }
+    return m[0];
+  });
+
+  const lines = [];
+  targets.forEach(project => {
+    const have = {};
+    tTasks_().all().filter(t => t.activo && t.projectId === project.projectId)
+      .forEach(t => { have[t.titulo] = true; });
+    let added = 0;
+    SEED_TAREAS_REUNION.forEach(t => {
+      if (have[t[0]]) return;
+      Tasks_create_(user, {
+        projectId: project.projectId, titulo: t[0], descripcion: t[1],
+        estado: STATUS.BACKLOG, prioridad: PRIORITY.ALTA, responsable: '',
+        fechaInicio: '2026-10-20', fechaVencimiento: '2026-10-23'
+      });
+      added++;
+    });
+    lines.push('"' + project.nombre + '": ' + added + ' tareas creadas, ' +
+      (SEED_TAREAS_REUNION.length - added) + ' ya existían.');
+  });
+  const msg = lines.join('\n');
+  Logger.log(msg);
+  return msg;
+}

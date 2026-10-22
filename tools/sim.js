@@ -422,6 +422,29 @@ as(ownerEmail);
 check('es idempotente: ejecutarla de nuevo no duplica',
   call('getGantt', nob.projectId).data.items.length === 19);
 
+console.log('\n── 11d. Carga de tareas de la reunión ──────────────────────');
+as(ownerEmail);
+const q4 = ok(call('createProject', { nombre: 'Q4 Ingenieros' }), 'se crea un proyecto Q4 Ingenieros');
+as(ownerEmail);
+let seedT = null;
+try { seedT = call('seedTareasReunion'); check('seedTareasReunion() se ejecuta', true); }
+catch (e) { check('seedTareasReunion() se ejecuta', false, e.message); }
+[nob, q4].forEach(pr => {
+  as(ownerEmail);
+  const tareas = (ok(call('getTasks', pr.projectId, {}), 'se leen las tareas de ' + pr.nombre) || [])
+    .filter(t => /Gantt|kickoff|contrato|Drive|captación|mejora continua|Plan de trabajo/i.test(t.titulo));
+  check(pr.nombre + ': 8 tareas creadas', tareas.length === 8, 'tareas: ' + tareas.length + ' · ' + seedT);
+  check(pr.nombre + ': todas en BACKLOG con prioridad ALTA y sin responsable',
+    tareas.every(t => t.estado === 'BACKLOG' && t.prioridad === 'ALTA' && !t.responsable));
+  check(pr.nombre + ': fechas 20-10-2026 a 23-10-2026',
+    tareas.every(t => t.fechaInicio === '2026-10-20' && t.fechaVencimiento === '2026-10-23'));
+});
+as(ownerEmail);
+call('seedTareasReunion');
+as(ownerEmail);
+check('es idempotente: ejecutarla otra vez no duplica',
+  call('getTasks', q4.projectId, {}).data.length === 8);
+
 console.log('\n── 12. Rendimiento de acceso a la hoja ─────────────────────');
 Object.values(store.spreadsheets).forEach(s => s.getSheets().forEach(sh => { sh.reads = 0; sh.writes = 0; }));
 as('ana@example.com');
